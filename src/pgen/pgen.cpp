@@ -916,6 +916,10 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     RadiationLinearWave(pin, is_restart);
   } else if (pgen_fun_name.compare("rad_beam") == 0) {
     RadiationBeam(pin, is_restart);
+  } else if (pgen_fun_name.compare("radvet_beam") == 0) {
+    RadvetBeam(pin, is_restart);
+  } else if (pgen_fun_name.compare("radvet_linwave") == 0) {
+    RadvetLinwave(pin, is_restart);
   } else if (pgen_fun_name.compare("shock_tube") == 0) {
     ShockTube(pin, is_restart);
   } else if (pgen_fun_name.compare("shwave") == 0) {

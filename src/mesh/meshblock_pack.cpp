@@ -27,6 +27,7 @@
 #include "diffusion/viscosity.hpp"
 #include "diffusion/resistivity.hpp"
 #include "radiation/radiation.hpp"
+#include "radiation_vet/radiation_vet.hpp"
 #include "srcterms/turb_driver.hpp"
 #include "particles/particles.hpp"
 #include "units/units.hpp"
@@ -67,6 +68,7 @@ MeshBlockPack::~MeshBlockPack() {
   }
   if (pturb  != nullptr) {delete pturb;}
   if (prad   != nullptr) {delete prad;}
+  if (pradvet != nullptr) {delete pradvet;}
   if (pmhd   != nullptr) {delete pmhd;}
   if (phydro != nullptr) {delete phydro;}
   if (punit  != nullptr) {delete punit;}
@@ -171,6 +173,21 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
     prad->AssembleRadTasks(tl_map);
   } else {
     prad = nullptr;
+  }
+
+  // (5b) RADIATION_VET (LTE-only short-characteristics VET solver)
+  // Deliberately NOT added to the hydro/mhd task-list-assembly exclusion guards above:
+  // unlike the GR <radiation> module, radiation_vet does not take over hydro/mhd's task
+  // list -- it inserts its own tasks into the existing "stagen" list assembled by
+  // Hydro/MHD themselves (see RadiationVET::AssembleVETTasks), so that with radiation_vet
+  // disabled, hydro/mhd behavior and task-list assembly are completely unaffected
+  // (Rule 4: no impact when radiation is off).
+  if (pin->DoesBlockExist("radiation_vet")) {
+    pradvet = new radiation_vet::RadiationVET(this, pin);
+    nphysics++;
+    pradvet->AssembleVETTasks(tl_map);
+  } else {
+    pradvet = nullptr;
   }
 
   // (6) TURBULENCE DRIVER

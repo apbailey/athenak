@@ -125,6 +125,8 @@ add_executable(
         pgen/tests/shwave.cpp
         pgen/tests/rad_beam.cpp
         pgen/tests/rad_linear_wave.cpp
+        pgen/tests/radvet_beam.cpp
+        pgen/tests/radvet_linwave.cpp
         pgen/tests/z4c_boosted_puncture.cpp
         pgen/tests/z4c_linear_wave.cpp
 
@@ -138,6 +140,14 @@ add_executable(
         radiation/radiation_tasks.cpp
         radiation/radiation_tetrad.cpp
         radiation/radiation_update.cpp
+
+        radiation_vet/radiation_vet.cpp
+        radiation_vet/vet_quadrature.cpp
+        radiation_vet/vet_sweep.cpp
+        radiation_vet/vet_iteration.cpp
+        radiation_vet/vet_moments.cpp
+        radiation_vet/vet_srcterms.cpp
+        radiation_vet/vet_newdt.cpp
 
         shearing_box/orbital_advection.cpp
         shearing_box/orbital_advection_cc.cpp
