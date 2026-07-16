@@ -108,6 +108,7 @@ void InterpQuadSourceSlopeLim(Real dtaum, Real dtaup, Real S0, Real S1, Real S2,
 //!   dx1,dx2,dx3— cell widths
 //!   ndim       — 1, 2 or 3
 //!   ks, js     — start-of-active-zone indices for k, j
+//!   a1_out     — if non-null, returns Ψ⁰ (local-source weight) for Λ* accumulation
 
 KOKKOS_INLINE_FUNCTION
 Real UpdateCellSC(
@@ -117,7 +118,8 @@ Real UpdateCellSC(
     int sx, int sy, int sz,
     Real mux, Real muy, Real muz,
     Real dx1, Real dx2, Real dx3,
-    int ndim, int ks, int js) {
+    int ndim, int ks, int js,
+    Real *a1_out) {
   int im = i - sx, ip = i + sx;
   Real chi1 = chi_(m,k,j,i);
   Real S1   = bb_(m,k,j,i);
@@ -215,6 +217,7 @@ Real UpdateCellSC(
 
   Real edtau, a0, a1, a2;
   InterpQuadSourceSlopeLim(dtaum, dtaup, S0, S1, S2, &edtau, &a0, &a1, &a2);
+  if (a1_out != nullptr) { *a1_out = a1; }
   return a0*S0 + a1*S1 + a2*S2 + edtau*imu0;
 }
 

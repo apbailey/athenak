@@ -82,9 +82,8 @@ void VET::CalculateMoments() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void VET::ComputeQrad
-//! \brief Gas-radiation coupling (apb_rad convention):
-//!   Q = chi * crat * prat * (J - S)
-//! where chi = opa*rho, S = T^4 (stored in bb array). Sign: J > S heats the gas.
+//! \brief Gas-radiation coupling (Davis Eq. 27 / absorption form):
+//!   Q = χ_abs * crat * prat * (J - B) = eps * chi * crat * prat * (J - B)
 
 void VET::ComputeQrad() {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
@@ -93,14 +92,16 @@ void VET::ComputeQrad() {
   int ks = indcs.ks, ke = indcs.ke;
   int nmb1 = pmy_pack->nmb_thispack - 1;
   auto chi_ = chi;
-  auto bb_ = bb;
+  auto eps_ = eps;
+  auto planck_ = planck;
   auto jmean_ = jmean;
   auto qrad_ = qrad;
   const Real crat_prat = crat * prat;
 
   par_for("vet_qrad", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    qrad_(m,k,j,i) = crat_prat * chi_(m,k,j,i) * (jmean_(m,k,j,i) - bb_(m,k,j,i));
+    Real chi_abs = eps_(m,k,j,i) * chi_(m,k,j,i);
+    qrad_(m,k,j,i) = crat_prat * chi_abs * (jmean_(m,k,j,i) - planck_(m,k,j,i));
   });
 }
 

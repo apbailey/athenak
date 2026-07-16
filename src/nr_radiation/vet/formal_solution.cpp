@@ -5,18 +5,8 @@
 //========================================================================================
 //! \file formal_solution.cpp
 //! \brief Short-characteristics formal solution (Davis, Stone & Jiang 2012 Eq. 20)
-//! with three dispatch modes selectable via the input parameter nr_radiation/sweep:
-//!
-//!   "wavefront"  — host loop over hyperplane index h, flat par_for per plane (default)
-//!   "diagonal"   — TeamPolicy with league=(nmb*nang_tot), device loop over h with
-//!                  team_barrier between planes
-//!   "jacobi"     — single par_for over all (m,angg,k,j,i); no sweep ordering enforced,
-//!                  effectively Gauss-Seidel in GPU thread order (requires more outer
-//!                  iterations to converge, but each iteration is fully parallel)
-//!
-//! All three modes call the shared UpdateCellSC() device function defined in
-//! vet_interp.hpp, which encapsulates the per-cell geometry logic, transverse
-//! interpolation, opacity interpolation and source-function quadrature weights.
+//! with three dispatch modes selectable via nr_radiation/sweep. When use_ali is true,
+//! also accumulates lamstr += wμ·Ψ⁰ (Olson & Kunasz diagonal Λ*) via atomic_add.
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +23,9 @@ namespace nr_radiation {
 //! \brief Dispatcher — delegates to the implementation selected by sweep_method.
 
 void VET::FormalSolution() {
+  if (use_ali) {
+    Kokkos::deep_copy(DevExeSpace(), lamstr, 0.0);
+  }
   if (sweep_method == "diagonal") {
     FormalSolutionDiagonal();
   } else if (sweep_method == "jacobi") {
@@ -44,8 +37,6 @@ void VET::FormalSolution() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void VET::FormalSolutionWavefront
-//! \brief Hyperplane-swept formal solution.  Host loop over hyperplane index h;
-//! device par_for flattens (MeshBlock x direction x transverse-plane cell).
 
 void VET::FormalSolutionWavefront() {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
@@ -58,10 +49,13 @@ void VET::FormalSolutionWavefront() {
   int nang = pang->nang;
   int nangt1 = nang_tot - 1;
   auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto ir_ = ir;
   auto chi_ = chi;
   auto bb_ = bb;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
 
   if (ndim == 1) {
     for (int h = 0; h < nx1; ++h) {
@@ -73,10 +67,15 @@ void VET::FormalSolutionWavefront() {
         int sx = (mux > 0.0) ? 1 : -1;
         int i  = (sx > 0) ? (is + h) : (ie - h);
         Real dx1v = mbsize.d_view(m).dx1;
-        ir_(m,angg,ks,js,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                            i,js,ks, sx,0,0,
-                                            mux,0.0,0.0,
-                                            dx1v,0.0,0.0, ndim,ks,js);
+        Real a1 = 0.0;
+        Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                              i,js,ks, sx,0,0,
+                              mux,0.0,0.0,
+                              dx1v,0.0,0.0, ndim,ks,js, &a1);
+        ir_(m,angg,ks,js,i) = I;
+        if (accumulate) {
+          Kokkos::atomic_add(&lam_(m,ks,js,i), wmu.d_view(a) * a1);
+        }
       });
     }
   } else if (ndim == 2) {
@@ -96,10 +95,15 @@ void VET::FormalSolutionWavefront() {
         int j = (sy > 0) ? (js + li2) : (je - li2);
         Real dx1v = mbsize.d_view(m).dx1;
         Real dx2v = mbsize.d_view(m).dx2;
-        ir_(m,angg,ks,j,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                           i,j,ks, sx,sy,0,
-                                           mux,muy,0.0,
-                                           dx1v,dx2v,0.0, ndim,ks,js);
+        Real a1 = 0.0;
+        Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                              i,j,ks, sx,sy,0,
+                              mux,muy,0.0,
+                              dx1v,dx2v,0.0, ndim,ks,js, &a1);
+        ir_(m,angg,ks,j,i) = I;
+        if (accumulate) {
+          Kokkos::atomic_add(&lam_(m,ks,j,i), wmu.d_view(a) * a1);
+        }
       });
     }
   } else {
@@ -123,10 +127,15 @@ void VET::FormalSolutionWavefront() {
         Real dx1v = mbsize.d_view(m).dx1;
         Real dx2v = mbsize.d_view(m).dx2;
         Real dx3v = mbsize.d_view(m).dx3;
-        ir_(m,angg,k,j,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                          i,j,k, sx,sy,sz,
-                                          mux,muy,muz,
-                                          dx1v,dx2v,dx3v, ndim,ks,js);
+        Real a1 = 0.0;
+        Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                              i,j,k, sx,sy,sz,
+                              mux,muy,muz,
+                              dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+        ir_(m,angg,k,j,i) = I;
+        if (accumulate) {
+          Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+        }
       });
     }
   }
@@ -134,9 +143,6 @@ void VET::FormalSolutionWavefront() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void VET::FormalSolutionDiagonal
-//! \brief TeamPolicy sweep: one team per (MeshBlock, angle) pair, device loop over
-//! hyperplane planes h with team_barrier between planes, TeamThreadRange over cells on
-//! each plane. Same algorithmic sweep order as wavefront (so bit-identical results).
 
 void VET::FormalSolutionDiagonal() {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
@@ -149,10 +155,13 @@ void VET::FormalSolutionDiagonal() {
   int nang = pang->nang;
   int nang_tot_ = nang_tot;
   auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto ir_ = ir;
   auto chi_ = chi;
   auto bb_ = bb;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
 
   int league_size = nmb * nang_tot_;
   int hmax;
@@ -177,16 +186,22 @@ void VET::FormalSolutionDiagonal() {
     Real dx1v = mbsize.d_view(m).dx1;
     Real dx2v = mbsize.d_view(m).dx2;
     Real dx3v = mbsize.d_view(m).dx3;
+    Real w = wmu.d_view(a);
 
     for (int h = 0; h <= hmax; ++h) {
       if (ndim == 1) {
         Kokkos::parallel_for(Kokkos::TeamThreadRange(tmember, 1),
         [&](const int /*idx*/) {
           int i = (sx > 0) ? (is + h) : (ie - h);
-          ir_(m,angg,ks,js,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                              i,js,ks, sx,0,0,
-                                              mux,0.0,0.0,
-                                              dx1v,0.0,0.0, ndim,ks,js);
+          Real a1 = 0.0;
+          Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                                i,js,ks, sx,0,0,
+                                mux,0.0,0.0,
+                                dx1v,0.0,0.0, ndim,ks,js, &a1);
+          ir_(m,angg,ks,js,i) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,ks,js,i), w * a1);
+          }
         });
       } else if (ndim == 2) {
         Kokkos::parallel_for(Kokkos::TeamThreadRange(tmember, nx1),
@@ -195,10 +210,15 @@ void VET::FormalSolutionDiagonal() {
           if (li2 < 0 || li2 >= nx2) return;
           int i = (sx > 0) ? (is + li1) : (ie - li1);
           int j = (sy > 0) ? (js + li2) : (je - li2);
-          ir_(m,angg,ks,j,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                             i,j,ks, sx,sy,0,
-                                             mux,muy,0.0,
-                                             dx1v,dx2v,0.0, ndim,ks,js);
+          Real a1 = 0.0;
+          Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                                i,j,ks, sx,sy,0,
+                                mux,muy,0.0,
+                                dx1v,dx2v,0.0, ndim,ks,js, &a1);
+          ir_(m,angg,ks,j,i) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,ks,j,i), w * a1);
+          }
         });
       } else {
         int max_cells = nx1 * nx2;
@@ -211,10 +231,15 @@ void VET::FormalSolutionDiagonal() {
           int i = (sx > 0) ? (is + li1) : (ie - li1);
           int j = (sy > 0) ? (js + li2) : (je - li2);
           int k = (sz > 0) ? (ks + li3) : (ke - li3);
-          ir_(m,angg,k,j,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                            i,j,k, sx,sy,sz,
-                                            mux,muy,muz,
-                                            dx1v,dx2v,dx3v, ndim,ks,js);
+          Real a1 = 0.0;
+          Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                                i,j,k, sx,sy,sz,
+                                mux,muy,muz,
+                                dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+          ir_(m,angg,k,j,i) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,k,j,i), w * a1);
+          }
         });
       }
       tmember.team_barrier();
@@ -224,12 +249,6 @@ void VET::FormalSolutionDiagonal() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void VET::FormalSolutionJacobi
-//! \brief All cells updated in a single par_for with no sweep ordering enforced.
-//! Each cell reads upwind intensities from ir as-is (previous iteration's values for
-//! cells that have not been updated yet in this kernel launch, current-iteration values
-//! for cells that happen to have been scheduled first by the runtime). This is effectively
-//! Gauss-Seidel in GPU thread execution order. The fixed point is the same as the
-//! wavefront/diagonal result; convergence requires more outer iterations (iter_max).
 
 void VET::FormalSolutionJacobi() {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
@@ -241,10 +260,13 @@ void VET::FormalSolutionJacobi() {
   int nang = pang->nang;
   int nangt1 = nang_tot - 1;
   auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto ir_ = ir;
   auto chi_ = chi;
   auto bb_ = bb;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
 
   par_for("vet_sweep_jacobi", DevExeSpace(), 0, nmb1, 0, nangt1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
@@ -259,10 +281,15 @@ void VET::FormalSolutionJacobi() {
     Real dx1v = mbsize.d_view(m).dx1;
     Real dx2v = mbsize.d_view(m).dx2;
     Real dx3v = mbsize.d_view(m).dx3;
-    ir_(m,angg,k,j,i) = UpdateCellSC(chi_,bb_,ir_,m,angg,
-                                      i,j,k, sx,sy,sz,
-                                      mux,muy,muz,
-                                      dx1v,dx2v,dx3v, ndim,ks,js);
+    Real a1 = 0.0;
+    Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+                          i,j,k, sx,sy,sz,
+                          mux,muy,muz,
+                          dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+    ir_(m,angg,k,j,i) = I;
+    if (accumulate) {
+      Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+    }
   });
 }
 

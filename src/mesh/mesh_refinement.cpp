@@ -108,6 +108,9 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   if (pm->pmb_pack->prad != nullptr) {
     ncc_tosend += (pm->pmb_pack->prad->prgeo->nangles);
   }
+  if (pm->pmb_pack->pnrrad != nullptr) {
+    ncc_tosend += pm->pmb_pack->pnrrad->nang_tot;
+  }
   if (pm->pmb_pack->pz4c != nullptr) {
     ncc_tosend += (pm->pmb_pack->pz4c->nz4c);
   }
@@ -512,6 +515,7 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   hydro::Hydro* phydro = pm->pmb_pack->phydro;
   mhd::MHD* pmhd = pm->pmb_pack->pmhd;
   radiation::Radiation* prad = pm->pmb_pack->prad;
+  nr_radiation::VET* pnrrad = pm->pmb_pack->pnrrad;
   z4c::Z4c* pz4c = pm->pmb_pack->pz4c;
   adm::ADM* padm = pm->pmb_pack->padm;
   // derefine (if needed)
@@ -525,6 +529,9 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
     }
     if (prad != nullptr) {
       DerefineCCSameRank(prad->i0, prad->coarse_i0);
+    }
+    if (pnrrad != nullptr) {
+      DerefineCCSameRank(pnrrad->ir, pnrrad->coarse_ir);
     }
     if (pz4c != nullptr) {
       DerefineCCSameRank(pz4c->u0, pz4c->coarse_u0);
@@ -544,6 +551,9 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   if (prad != nullptr) {
     CopyCC(prad->i0);
   }
+  if (pnrrad != nullptr) {
+    CopyCC(pnrrad->ir);
+  }
   if (pz4c != nullptr) {
     CopyCC(pz4c->u0);
   } else if (padm != nullptr) {
@@ -562,6 +572,9 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
     }
     if (prad != nullptr) {
       CopyForRefinementCC(prad->i0, prad->coarse_i0);
+    }
+    if (pnrrad != nullptr) {
+      CopyForRefinementCC(pnrrad->ir, pnrrad->coarse_ir);
     }
     if (pz4c != nullptr) {
       CopyForRefinementCC(pz4c->u0, pz4c->coarse_u0);
@@ -597,6 +610,9 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
     }
     if (prad != nullptr) {
       RefineCC(new_to_old, prad->i0, prad->coarse_i0);
+    }
+    if (pnrrad != nullptr) {
+      RefineCC(new_to_old, pnrrad->ir, pnrrad->coarse_ir);
     }
     if (pz4c != nullptr) {
       RefineCC(new_to_old, pz4c->u0, pz4c->coarse_u0, true);

@@ -29,6 +29,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
     coarse_ir("vet_coarse_ir",1,1,1,1,1),
     chi("vet_chi",1,1,1,1),
     bb("vet_bb",1,1,1,1),
+    planck("vet_planck",1,1,1,1),
     jmean("vet_jmean",1,1,1,1),
     jmean_old("vet_jmean_old",1,1,1,1),
     qrad("vet_qrad",1,1,1,1),
@@ -39,32 +40,12 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
     moments("vet_moments",1,1,1,1,1),
     wfreq("vet_wfreq",1),
     pmy_pack(ppack) {
-  // Rule 2/Step 1 safety gates -----------------------------------------------------
-  // (a) straight-line rays require flat, Cartesian spacetime -- refuse GR/curved coords
+  // straight-line rays require flat, Cartesian spacetime
   if (pmy_pack->pcoord->is_general_relativistic) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
       << std::endl << "<nr_radiation> requires flat, Cartesian coordinates; the "
       << "short-characteristics straight-ray formal solution is not valid in GR"
       << std::endl;
-    std::exit(EXIT_FAILURE);
-  }
-  // (b) v1 is LTE-only (eps==1 hardcoded): refuse any input that tries to set eps!=1
-  if (pin->DoesParameterExist("nr_radiation", "eps")) {
-    Real eps_in = pin->GetReal("nr_radiation", "eps");
-    if (eps_in != 1.0) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-        << std::endl << "<nr_radiation>/eps = " << eps_in << " requested, but this is "
-        << "an LTE-only (eps=1) v1 implementation; the ALI/scattering iteration is not "
-        << "implemented" << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
-  }
-  // (c) v1 supports neither SMR nor AMR (see plan's "Modularity check" section)
-  if (pmy_pack->pmesh->multilevel) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "<nr_radiation> does not yet support SMR or AMR (mesh has "
-      << "multilevel=true); coarse-fine prolongation of the intensity array is not "
-      << "implemented" << std::endl;
     std::exit(EXIT_FAILURE);
   }
 
@@ -89,20 +70,38 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
     std::exit(EXIT_FAILURE);
   }
 
-  // Iteration control for the boundary-lag fixed-point loop (Step 4)
+  // Iteration control
   iter_max = pin->GetOrAddInteger("nr_radiation", "iter_max", 100);
   itermin  = pin->GetOrAddInteger("nr_radiation", "itermin", 2);
   iter_tol = pin->GetOrAddReal("nr_radiation", "iter_tol", 1.0e-6);
+  ali_tol  = pin->GetOrAddReal("nr_radiation", "ali_tol", 1.0e-5);
   last_niter = 0;
   cnv_flag = false;
 
   if (itermin < 1) itermin = 1;
   if (itermin > iter_max) itermin = iter_max;
 
-  // Opacity/coupling parameters (apb_rad convention)
+  // Opacity/coupling parameters
   opa  = pin->GetReal("nr_radiation", "opa");
+  ops  = pin->GetOrAddReal("nr_radiation", "ops", 0.0);
   prat = pin->GetOrAddReal("nr_radiation", "prat", 1.0);
   crat = pin->GetOrAddReal("nr_radiation", "crat", 1.0);
+  if (opa < 0.0 || ops < 0.0) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation> opa and ops must be non-negative" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+
+  use_eps_uniform = pin->DoesParameterExist("nr_radiation", "eps");
+  eps_uniform = use_eps_uniform ? pin->GetReal("nr_radiation", "eps") : 1.0;
+  if (use_eps_uniform && (eps_uniform < 0.0 || eps_uniform > 1.0)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/eps must be in [0,1]" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+
+  // Activate Jacobi-ALI when scattering is present
+  use_ali = (ops > 0.0) || (use_eps_uniform && eps_uniform < 1.0);
 
   // Frequency scaffold (gray default)
   nfreq = pin->GetOrAddInteger("nr_radiation", "nfreq", 1);
@@ -112,7 +111,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   wfreq.template modify<HostMemSpace>();
   wfreq.template sync<DevMemSpace>();
 
-  // Angular quadrature: Bruls et al. (1999) type-A grid, dimensionality set by mesh
+  // Angular quadrature
   int nmu = pin->GetInteger("nr_radiation", "nmu");
   Mesh *pm = pmy_pack->pmesh;
   int ndim = (pm->three_d) ? 3 : ((pm->two_d) ? 2 : 1);
@@ -129,6 +128,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(ir, nmb, nang_tot, ncells3, ncells2, ncells1);
   Kokkos::realloc(chi, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(bb, nmb, ncells3, ncells2, ncells1);
+  Kokkos::realloc(planck, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(jmean, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(jmean_old, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(qrad, nmb, ncells3, ncells2, ncells1);
@@ -141,18 +141,16 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::deep_copy(qrad, 0.0);
   Kokkos::deep_copy(moments, 0.0);
   Kokkos::deep_copy(sigma_s, 0.0);
-  Kokkos::deep_copy(eps, 1.0);      // LTE default
+  Kokkos::deep_copy(eps, 1.0);
   Kokkos::deep_copy(lamstr, 0.0);
+  Kokkos::deep_copy(planck, 0.0);
+  Kokkos::deep_copy(bb, 0.0);
 
-  // AMR scaffold: allocate coarse_ir using coarse-cell counts even though multilevel
-  // is currently FATAL. This prepares for future SMR/AMR support without changing
-  // runtime behaviour (the FATAL above still fires if multilevel is true).
+  // coarse_ir for SMR/AMR (CC Restrict/Prolong)
   {
     int nccells1 = indcs.cnx1 + 2*(indcs.ng);
     int nccells2 = (indcs.cnx2 > 1) ? (indcs.cnx2 + 2*(indcs.ng)) : 1;
     int nccells3 = (indcs.cnx3 > 1) ? (indcs.cnx3 + 2*(indcs.ng)) : 1;
-    // On uniform meshes cnx* is still set (nx*/2); if somehow invalid, fall back
-    // to fine-grid sizes so the array is well-formed.
     if (nccells1 < 1) nccells1 = ncells1;
     if (nccells2 < 1) nccells2 = ncells2;
     if (nccells3 < 1) nccells3 = ncells3;
@@ -168,13 +166,9 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   i_in.template modify<HostMemSpace>();
   i_in.template sync<DevMemSpace>();
 
-  // Boundary communication buffers for the intensity array
   pbval_ir = new MeshBoundaryValuesCC(ppack, pin, false);
   pbval_ir->InitializeBuffers(nang_tot);
 
-  // radiation-relaxation timestep (Athena-C radtrans_dt) is recomputed each
-  // SolveTransfer when affect_fluid; start unconstrained so beam/non-coupled runs
-  // keep the hydro CFL.
   dtnew = std::numeric_limits<Real>::max();
 }
 

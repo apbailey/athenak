@@ -942,6 +942,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     VETAttenuation(pin, is_restart);
   } else if (pgen_fun_name.compare("vet_moments") == 0) {
     VETMoments(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_atmosphere") == 0) {
+    VETAtmosphere(pin, is_restart);
 
   } else {
     // name not set on command line or input file, print warning and quit
