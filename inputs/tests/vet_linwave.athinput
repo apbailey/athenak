@@ -1,11 +1,11 @@
 # AthenaK input: LTE SC damped acoustic wave (Athena-C athinput.linear_wave_rad2d)
 
 <comment>
-problem   = radvet linwave
+problem   = vet linwave
 reference = Davis, Stone & Jiang 2012 Eq. 38
 
 <job>
-basename  = RadvetLinWave
+basename  = VETLinWave
 
 <mesh>
 nghost    = 2
@@ -46,20 +46,18 @@ reconstruct = plm
 rsolver     = llf
 gamma       = 1.66666666667
 
-<radiation_vet>
-nmu         = 2
-chi_type    = constant
-# chi0 = tau * 2π  (lambda=1 for this box geometry)
-chi0        = 6.28318530718
-bb_type     = greybody
-# bb_norm = B0/T0^4 with T0=1/gamma, B0=gamma*E0/(Bo*pi), E0=1/(gamma*gm1)
-bb_norm     = 3.6838585
+<nr_radiation>
+nmu          = 2
+opa          = 6.28318530718
+prat         = 46.091405
+crat         = 1.0
 affect_fluid = true
-iter_max    = 20
-iter_tol    = 1.0e-10
+sweep        = wavefront
+iter_max     = 20
+iter_tol     = 1.0e-10   # test uses tight tol; production default is 1.0e-6
 
 <problem>
-pgen_name = radvet_linwave
+pgen_name = vet_linwave
 amp       = 1.0e-6
 vflow     = 0.0
 Bo        = 1.0

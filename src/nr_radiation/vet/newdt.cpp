@@ -3,12 +3,12 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file vet_newdt.cpp
+//! \file newdt.cpp
 //! \brief Radiation-relaxation timestep for operator-split Q_rad coupling.
-//! Direct port of Athena-C radiation/radtrans_dt.c (used with Davis 2012 Eq. 26
-//! heating/cooling). Sets RadiationVET::dtnew = 1/nu_rad (Mesh::NewTimeStep multiplies
-//! by cfl_no) and clamps pmesh->dt for the current cycle so SolveTransfer → AddQrad
-//! see a stable step.
+//! apb_rad convention: linearized cooling rate
+//!   nu_rad = 4*(gamma-1)*T^3 * opa * crat * prat / (1 + 3*(dx*chi/pi)^2)
+//! where chi = opa*rho. The diffusion correction in the denominator transitions
+//! smoothly from the optically thin rate to the diffusion timescale at high tau.
 
 #include <algorithm>
 #include <cmath>
@@ -16,22 +16,21 @@
 
 #include "athena.hpp"
 #include "mesh/mesh.hpp"
+#include "driver/driver.hpp"
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "eos/eos.hpp"
-#include "radiation_vet.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 
-namespace radiation_vet {
+namespace nr_radiation {
 
 //----------------------------------------------------------------------------------------
-//! \fn void RadiationVET::UpdateTimeStep
-//! \brief Athena-C radtrans_dt: Courant-like constraint on the radiation thermal
-//! relaxation rate
-//!   nu_rad = [16*pi*Gamma_1*eps*B*chi/(R_ideal*T*rho)] / (1 + 3*(dxmin*chi/pi)^2)
-//! with CPrat=1 (Davis units). Without this limit, explicit Eq. 26 coupling is stiff
-//! for Bo~O(1), tau~O(1) linear waves and the hydro CFL alone is unsafe.
+//! \fn TaskStatus VET::NewTimeStep
+//! \brief Compute radiation-relaxation timestep and store in dtnew.
+//! Registered in stagen; Mesh::NewTimeStep() picks up dtnew in its global minimum.
 
-void RadiationVET::UpdateTimeStep() {
+TaskStatus VET::NewTimeStep(Driver *pdrive, int stage) {
+  if (stage != pdrive->nexp_stages) return TaskStatus::complete;
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
@@ -51,9 +50,8 @@ void RadiationVET::UpdateTimeStep() {
       dxmin = std::min(dxmin, mbsize.h_view(m).dx3);
     }
   }
-  const Real qa = 3.0 * (dxmin * dxmin) / (M_PI * M_PI);
+  const Real diff_coeff = 3.0 / (M_PI * M_PI);
 
-  // Gamma_1 = gamma - 1, R_ideal = 1 (Athena-C linear_wave_rad2d units)
   Real gamma = 5.0 / 3.0;
   if (pmy_pack->phydro != nullptr) {
     gamma = pmy_pack->phydro->peos->eos_data.gamma;
@@ -61,7 +59,7 @@ void RadiationVET::UpdateTimeStep() {
     gamma = pmy_pack->pmhd->peos->eos_data.gamma;
   }
   const Real gm1 = gamma - 1.0;
-  const Real nu_con = 16.0 * M_PI * gm1;  // CPrat=1, R_ideal=1
+  const Real rate_coeff = 4.0 * gm1 * opa * crat * prat;
 
   DvceArray5D<Real> w0;
   if (pmy_pack->phydro != nullptr) {
@@ -70,11 +68,13 @@ void RadiationVET::UpdateTimeStep() {
     w0 = pmy_pack->pmhd->w0;
   } else {
     dtnew = std::numeric_limits<Real>::max();
-    return;
+    return TaskStatus::complete;
   }
 
   auto chi_ = chi;
-  auto bb_ = bb;
+  Real dxmin2 = dxmin * dxmin;
+  Real diff_c = diff_coeff;
+  Real rc = rate_coeff;
   Real dt_min = std::numeric_limits<Real>::max();
   Kokkos::parallel_reduce("vet_rad_dt",
     Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
@@ -89,26 +89,20 @@ void RadiationVET::UpdateTimeStep() {
       k += ks;
       Real dens = w0(m, IDN, k, j, i);
       if (dens <= 0.0) return;
-      // primitives store internal energy density e at IEN; T = (γ−1) e / ρ
       Real temp = gm1 * w0(m, IEN, k, j, i) / dens;
       if (temp <= 0.0) return;
+      Real T3 = temp * temp * temp;
       Real chiv = chi_(m, k, j, i);
-      Real Bv = bb_(m, k, j, i);
-      // eps=1 (LTE)
-      Real nu_rad = nu_con * Bv * chiv / (temp * dens);
-      nu_rad /= (1.0 + qa * chiv * chiv);
+      Real nu_rad = rc * T3;
+      Real denom = 1.0 + diff_c * dxmin2 * chiv * chiv;
+      nu_rad /= denom;
       if (nu_rad > 0.0) {
         ldt = fmin(ldt, 1.0 / nu_rad);
       }
     }, Kokkos::Min<Real>(dt_min));
 
   dtnew = dt_min;
-
-  // Current-cycle clamp (Athena-C updates Mesh.dt before rad_to_hydro)
-  Real cfl = pmy_pack->pmesh->cfl_no;
-  if (dt_min < std::numeric_limits<Real>::max()) {
-    pmy_pack->pmesh->dt = std::min(pmy_pack->pmesh->dt, cfl * dt_min);
-  }
+  return TaskStatus::complete;
 }
 
-}  // namespace radiation_vet
+}  // namespace nr_radiation

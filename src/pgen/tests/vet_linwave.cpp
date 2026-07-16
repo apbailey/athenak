@@ -3,17 +3,16 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the AthenaK collaboration
 // Licensed under the 3-clause BSD License, see LICENSE file for details
 //========================================================================================
-//! \file radvet_linwave.cpp
+//! \file vet_linwave.cpp
 //! \brief Radiatively damped acoustic waves (Davis, Stone & Jiang 2012 §5.4 / Eq. 38;
 //! Stein & Spiegel 1967). Faithful 1D port of Athena-C linear_wave_rad1d.c for Figs. 9–10,
 //! with optional 2D non-grid-aligned extension (Athena-C linear_wave_rad2d.c).
 //!
 //! §5.4 protocol:
 //!   ρ0=1, γ=5/3, v0=0, a=1 (adiabatic sound speed), A=10^{-6}, periodic, tf=L/a.
-//!   χ0 = τ0·k = τ0·2π/λ  (λ = domain length along the wave for 1D).
-//!   B0 = γ Egas0 / (Bo π), bb_norm = B0/T0^4 with T0 = p0/ρ0 = 1/γ.
-//! Final diagnostics: Fourier-fitted ωR/(ka), ωI/(ka) (Fig. 9) and L1 / RMS error
-//! against the analytic eigenmode at tf (Fig. 10 / Eq. 44).
+//!   chi0 = τ0·k = τ0·2π/λ  (λ = domain length along the wave for 1D).
+//!   In the apb_rad convention: opa = chi0 (since rho0=1), crat = 1, prat = 4π bb_norm.
+//!   Initial intensity I = T0^4 (thermal equilibrium in radiation units).
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +29,7 @@
 #include "hydro/hydro.hpp"
 #include "eos/eos.hpp"
 #include "pgen/pgen.hpp"
-#include "radiation_vet/radiation_vet.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 
 namespace {
 using Complex = std::complex<Real>;
@@ -43,7 +42,7 @@ struct WaveVars {
   Real V0R, V0I, E0R, E0I;
   Real dens, pgas;
   Real gamma;
-  Real B0, T0, chi0;
+  Real chi0, T0;
   bool is_1d;
 };
 WaveVars wv;
@@ -110,12 +109,10 @@ void Zroots(Complex *a, int m, Complex *roots, int polish) {
 }
 
 //! Davis 2012 Eq. 38 cubic for radiatively modified acoustic modes
-//! (Athena-C acoustic_wave_rad). Returns dimensionless ω/(k a) with a=cs=1.
 void AcousticWaveRad(Real Bo, Real tau, Real cs, Real d0,
                      Real *vph, Real *rdamp,
                      Real *V0R, Real *V0I, Real *E0R, Real *E0I,
                      Real *omega_r, Real *omega_i) {
-  // Ξ = 1 - τ arctan(1/τ)  (Eq. 39 with τ=χ/k); θ ≡ ν0 Ξ0/(k a)
   Real mu = 1.0 - tau * std::atan(1.0/tau);
   Real theta = 16.0 * tau * mu / Bo;
   Complex coeff[4], roots[3];
@@ -134,21 +131,12 @@ void AcousticWaveRad(Real Bo, Real tau, Real cs, Real d0,
   *E0R = E0.real(); *E0I = E0.imag();
   *omega_r = omega.real();
   *omega_i = omega.imag();
-  *vph = omega.real();                 // phase speed / a  (a=1)
-  *rdamp = 2.0 * M_PI * omega.imag();  // amp ∝ exp(-rdamp t) for sin(2π(x/λ - vph t))
+  *vph = omega.real();
+  *rdamp = 2.0 * M_PI * omega.imag();
 }
 
 //----------------------------------------------------------------------------------------
-//! Fourier fit of the fundamental density mode (Davis §5.4 Fig. 9):
-//!   δρ = A exp(+ω_I k a t) sin(k x - ω_R k a t + φ0)   [paper time convention e^{iωt}]
-//! With k=2π/λ, a=1, and IC δρ = A sin(2π x/λ) so φ0=0 at t=0:
-//!   ω_I/(k a) = ln(A_meas/A) / (k a t) = ln(A_meas/A)/(2π t/λ)
-//!   ω_R/(k a) = -Δφ / (k a t)
-//! Note Stein/Davis Im(ω)>0 for growth of e^{iωt}; our eigenmode uses damping with
-//! amp_t = A exp(-rdamp t) and rdamp = 2π Im(ω_cubic) where the cubic root has Im>0 for
-//! damping under the e^{-iωt} convention equivalently. We report ωI_norm = Im(ω)/ (k a)
-//! with the SAME sign convention as the analytic cubic root (positive = damping rate of
-//! the wave amplitude when plotted as in Fig. 9 bottom panel of Davis 2012).
+//! Fourier fit of the fundamental density mode (Davis §5.4 Fig. 9)
 
 void FitFourierOmega(Mesh *pm, Real *omega_r_fit, Real *omega_i_fit, Real *amp_meas) {
   MeshBlockPack *pmbp = pm->pmb_pack;
@@ -189,23 +177,16 @@ void FitFourierOmega(Mesh *pm, Real *omega_r_fit, Real *omega_i_fit, Real *amp_m
   MPI_Allreduce(MPI_IN_PLACE, &nbuf, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   sum_s = buf[0]; sum_c = buf[1]; ncell = nbuf;
 #endif
-  // Projection onto orthonormal basis: <sin,sin>=N/2 for discrete periodic sum
   Real As = 2.0 * sum_s / static_cast<Real>(ncell);
   Real Ac = 2.0 * sum_c / static_cast<Real>(ncell);
   *amp_meas = std::sqrt(As*As + Ac*Ac);
-  // Initial: As=A, Ac=0. At time t the mode is A e^{-rdamp t} * sin(2π(r - vph t))
-  //        = A_t [sin(2πr)cos(φ) - cos(2πr)sin(φ)], φ=2π vph t
-  // so As = A_t cos(φ), Ac = -A_t sin(φ) ⇒ φ = atan2(-Ac, As)
-  Real phase = std::atan2(-Ac, As);  // in (-π, π]
+  Real phase = std::atan2(-Ac, As);
   Real t = pm->time;
   if (t <= 0.0 || *amp_meas <= 0.0) {
     *omega_r_fit = 0.0;
     *omega_i_fit = 0.0;
     return;
   }
-  // Unwrap onto the branch nearest the analytic expectation. Critical for the
-  // adiabatic regime where vph≈a and tf=L/a ⇒ φ_an≈2π, which otherwise wraps to 0
-  // and spuriously yields ωR≈0 (Davis §5.4 Fig. 9, high-Bo curves).
   Real phase_an = 2.0*M_PI * wv.vph * t / wv.lambda;
   while (phase < phase_an - M_PI) phase += 2.0*M_PI;
   while (phase > phase_an + M_PI) phase -= 2.0*M_PI;
@@ -213,7 +194,7 @@ void FitFourierOmega(Mesh *pm, Real *omega_r_fit, Real *omega_i_fit, Real *amp_m
   *omega_i_fit = -std::log((*amp_meas)/wv.amp) * wv.lambda / (2.0*M_PI * t);
 }
 
-void RadvetLinwaveErrors(ParameterInput *pin, Mesh *pm) {
+void VETLinwaveErrors(ParameterInput *pin, Mesh *pm) {
   MeshBlockPack *pmbp = pm->pmb_pack;
   if (pmbp->phydro == nullptr) return;
   auto &indcs = pm->mb_indcs;
@@ -267,7 +248,6 @@ void RadvetLinwaveErrors(ParameterInput *pin, Mesh *pm) {
   MPI_Allreduce(MPI_IN_PLACE, buf, 5, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
   l1_d=buf[0]; l1_e=buf[1]; l1_m1=buf[2]; l1_m2=buf[3]; l1_m3=buf[4];
 #endif
-  // Davis Eq. 44: per-variable mean absolute error; RMS over conserved variables
   Real d_err = l1_d/ncell, e_err = l1_e/ncell;
   Real m1_err = l1_m1/ncell, m2_err = l1_m2/ncell, m3_err = l1_m3/ncell;
   Real rms_err = std::sqrt(d_err*d_err + e_err*e_err + m1_err*m1_err
@@ -278,7 +258,7 @@ void RadvetLinwaveErrors(ParameterInput *pin, Mesh *pm) {
 
   if (global_variable::my_rank == 0) {
     int nx1_tot = pm->mesh_indcs.nx1;
-    std::cout << "radvet_linwave §5.4: Bo=" << wv.Bo << " tau=" << wv.tau
+    std::cout << "vet_linwave §5.4: Bo=" << wv.Bo << " tau=" << wv.tau
               << " N=" << nx1_tot << " t=" << time
               << " 1D=" << (wv.is_1d?1:0) << std::endl;
     std::cout << "  analytic: ωR/(ka)=" << wv.omega_r
@@ -291,10 +271,8 @@ void RadvetLinwaveErrors(ParameterInput *pin, Mesh *pm) {
               << " M1=" << m1_err << " M2=" << m2_err
               << " RMS=" << rms_err << std::endl;
 
-    // Machine-readable row for Fig. 9 / Fig. 10 post-processing
-    FILE *fp = std::fopen("RadvetLinWave-davis54.dat", "a");
+    FILE *fp = std::fopen("VETLinWave-davis54.dat", "a");
     if (fp) {
-      // Bo tau N nx2 omegaR_an omegaI_an omegaR_fit omegaI_fit RMS L1d L1E L1M1
       std::fprintf(fp,
         "%.6g %.6g %d %d %.10e %.10e %.10e %.10e %.10e %.10e %.10e %.10e\n",
         wv.Bo, wv.tau, nx1_tot, pm->mesh_indcs.nx2,
@@ -307,8 +285,8 @@ void RadvetLinwaveErrors(ParameterInput *pin, Mesh *pm) {
 }
 }  // namespace
 
-void ProblemGenerator::RadvetLinwave(ParameterInput *pin, const bool restart) {
-  pgen_final_func = RadvetLinwaveErrors;
+void ProblemGenerator::VETLinwave(ParameterInput *pin, const bool restart) {
+  pgen_final_func = VETLinwaveErrors;
   wv.amp   = pin->GetOrAddReal("problem", "amp", 1.0e-6);
   wv.vflow = pin->GetOrAddReal("problem", "vflow", 0.0);
   wv.Bo    = pin->GetReal("problem", "Bo");
@@ -316,8 +294,8 @@ void ProblemGenerator::RadvetLinwave(ParameterInput *pin, const bool restart) {
   if (restart) return;
 
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
-  if (pmbp->pradvet == nullptr || pmbp->phydro == nullptr) {
-    std::cout << "### FATAL ERROR: radvet_linwave needs <hydro> and <radiation_vet>"
+  if (pmbp->pnrrad == nullptr || pmbp->phydro == nullptr) {
+    std::cout << "### FATAL ERROR: vet_linwave needs <hydro> and <nr_radiation>"
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -329,12 +307,10 @@ void ProblemGenerator::RadvetLinwave(ParameterInput *pin, const bool restart) {
   wv.is_1d = pmy_mesh_->one_d || (pmy_mesh_->mesh_indcs.nx2 <= 1);
 
   if (wv.is_1d) {
-    // Davis §5.4 / Athena-C linear_wave_rad1d: grid-aligned wave, λ = Lx
     wv.cos_a = 1.0;
     wv.sin_a = 0.0;
     wv.lambda = x1size;
   } else {
-    // Athena-C linear_wave_rad2d non-grid-aligned geometry
     Real angle = std::atan(x1size/x2size);
     wv.sin_a = std::sin(angle);
     wv.cos_a = std::cos(angle);
@@ -342,32 +318,38 @@ void ProblemGenerator::RadvetLinwave(ParameterInput *pin, const bool restart) {
   }
 
   wv.dens = 1.0;
-  wv.pgas = wv.dens / wv.gamma;  // a = √(γ p/ρ) = 1
+  wv.pgas = wv.dens / wv.gamma;  // a = sqrt(gamma*p/rho) = 1
 
   AcousticWaveRad(wv.Bo, wv.tau, 1.0, wv.dens,
                   &wv.vph, &wv.rdamp, &wv.V0R, &wv.V0I, &wv.E0R, &wv.E0I,
                   &wv.omega_r, &wv.omega_i);
 
-  // Opacity / Planck normalization from Bo, τ (Davis Eqs. 40–41; Athena-C)
-  // Egas0 = p0/(γ-1) = 1/(γ(γ-1)); T0 = p0/(ρ0 R) = 1/γ; χ0 = τ0·k = τ0·2π/λ
+  // Derive opa, prat, crat from Bo, tau (Davis Eqs. 40-41; apb_rad convention)
+  // Etherm0 = p0/(gamma-1) = 1/(gamma*(gamma-1)); T0 = (gamma-1)*Etherm0/rho0 = 1/gamma
+  // chi0 = tau*2*pi/lambda; B0 = gamma*Etherm0/(Bo*pi) = 1/((gamma-1)*Bo*pi)
+  // bb_norm = B0/T0^4 = gamma^4/((gamma-1)*Bo*pi)
+  // apb_rad mapping: opa = chi0 (rho0=1), crat = 1, prat = 4*pi*bb_norm
   Real Etherm0 = 1.0 / (wv.gamma * gm1);
-  wv.T0 = Etherm0 * gm1 / wv.dens;
-  wv.B0 = wv.gamma * Etherm0 / (wv.Bo * M_PI);
+  wv.T0 = gm1 * Etherm0 / wv.dens;  // = 1/gamma
   wv.chi0 = wv.tau * 2.0 * M_PI / wv.lambda;
-  Real bb_norm = wv.B0 / (wv.T0*wv.T0*wv.T0*wv.T0);
+  Real B0 = wv.gamma * Etherm0 / (wv.Bo * M_PI);
+  Real bb_norm = B0 / (wv.T0*wv.T0*wv.T0*wv.T0);
 
-  // Override radiation_vet opacity from problem Bo/τ so sweep scripts need not
-  // hardcode chi0/bb_norm (still constructed from pin; values updated here).
-  pmbp->pradvet->opac.chi0 = wv.chi0;
-  pmbp->pradvet->opac.bb_norm = bb_norm;
-  pmbp->pradvet->opac.bb_type = radiation_vet::VETBBType::greybody;
+  Real opa_val = wv.chi0;   // chi = opa*rho, rho0=1 => opa = chi0
+  Real crat_val = 1.0;      // reduced speed of light = sound speed
+  Real prat_val = 4.0 * M_PI * bb_norm;
 
-  std::cout << "radvet_linwave: Bo=" << wv.Bo << " tau=" << wv.tau
+  // Override nr_radiation parameters from problem Bo/tau
+  pmbp->pnrrad->opa  = opa_val;
+  pmbp->pnrrad->crat = crat_val;
+  pmbp->pnrrad->prat = prat_val;
+
+  std::cout << "vet_linwave: Bo=" << wv.Bo << " tau=" << wv.tau
             << " lambda=" << wv.lambda << " 1D=" << (wv.is_1d?1:0) << std::endl;
   std::cout << "  omega/(ka)=(" << wv.omega_r << "," << wv.omega_i
             << ") vph=" << wv.vph << " rdamp=" << wv.rdamp << std::endl;
-  std::cout << "  T0=" << wv.T0 << " B0=" << wv.B0 << " chi0=" << wv.chi0
-            << " bb_norm=" << bb_norm << std::endl;
+  std::cout << "  opa=" << opa_val << " crat=" << crat_val << " prat=" << prat_val
+            << " T0=" << wv.T0 << " chi0=" << wv.chi0 << std::endl;
 
   auto &indcs = pmy_mesh_->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
@@ -378,7 +360,7 @@ void ProblemGenerator::RadvetLinwave(ParameterInput *pin, const bool restart) {
   int nmb1 = pmbp->nmb_thispack - 1;
   auto wv_ = wv;
 
-  par_for("radvet_linwave_ic", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  par_for("vet_linwave_ic", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real x1v = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real x2v = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
@@ -398,5 +380,7 @@ void ProblemGenerator::RadvetLinwave(ParameterInput *pin, const bool restart) {
     u0(m,IM3,k,j,i) = 0.0;
   });
 
-  Kokkos::deep_copy(pmbp->pradvet->ir, wv.B0);
+  // Initial intensity: thermal equilibrium I = S = T0^4 (apb_rad radiation units)
+  Real T04 = wv.T0 * wv.T0 * wv.T0 * wv.T0;
+  Kokkos::deep_copy(pmbp->pnrrad->ir, T04);
 }

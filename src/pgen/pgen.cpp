@@ -916,10 +916,12 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     RadiationLinearWave(pin, is_restart);
   } else if (pgen_fun_name.compare("rad_beam") == 0) {
     RadiationBeam(pin, is_restart);
-  } else if (pgen_fun_name.compare("radvet_beam") == 0) {
-    RadvetBeam(pin, is_restart);
-  } else if (pgen_fun_name.compare("radvet_linwave") == 0) {
-    RadvetLinwave(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_beam") == 0) {
+    VETBeam(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_linwave") == 0) {
+    VETLinwave(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_bench") == 0) {
+    VETBench(pin, is_restart);
   } else if (pgen_fun_name.compare("shock_tube") == 0) {
     ShockTube(pin, is_restart);
   } else if (pgen_fun_name.compare("shwave") == 0) {
@@ -934,6 +936,12 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     EOSCompose(pin, is_restart);
   } else if (pgen_fun_name.compare("gauss_legendre") == 0) {
     GaussLegendre(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_uniform") == 0) {
+    VETUniform(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_attenuation") == 0) {
+    VETAttenuation(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_moments") == 0) {
+    VETMoments(pin, is_restart);
 
   } else {
     // name not set on command line or input file, print warning and quit

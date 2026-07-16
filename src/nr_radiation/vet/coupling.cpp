@@ -3,7 +3,7 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file vet_srcterms.cpp
+//! \file coupling.cpp
 //! \brief Apply radiative heating/cooling to the fluid energy equation each RK stage:
 //!   u0(IEN) += beta_dt * Q_rad   (Davis 2012 Eq. 26 with Q from Eq. 27).
 
@@ -12,15 +12,15 @@
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "driver/driver.hpp"
-#include "radiation_vet.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 
-namespace radiation_vet {
+namespace nr_radiation {
 
 //----------------------------------------------------------------------------------------
-//! \fn TaskStatus RadiationVET::AddQrad
+//! \fn TaskStatus VET::AddQrad
 //! \brief Inserted after hydro/mhd RKUpdate, before HydroSrcTerms / MHDSrcTerms.
 
-TaskStatus RadiationVET::AddQrad(Driver *pdrive, int stage) {
+TaskStatus VET::AddQrad(Driver *pdrive, int stage) {
   if (!affect_fluid) return TaskStatus::complete;
 
   Real beta_dt = (pdrive->beta[stage-1]) * (pmy_pack->pmesh->dt);
@@ -47,4 +47,4 @@ TaskStatus RadiationVET::AddQrad(Driver *pdrive, int stage) {
   return TaskStatus::complete;
 }
 
-}  // namespace radiation_vet
+}  // namespace nr_radiation

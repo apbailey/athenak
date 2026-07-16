@@ -1,11 +1,11 @@
-#ifndef RADIATION_VET_VET_QUADRATURE_HPP_
-#define RADIATION_VET_VET_QUADRATURE_HPP_
+#ifndef NR_RADIATION_ANGULAR_GRID_HPP_
+#define NR_RADIATION_ANGULAR_GRID_HPP_
 //========================================================================================
 // AthenaXXX astrophysical plasma code
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file vet_quadrature.hpp
+//! \file angular_grid.hpp
 //! \brief Angular quadrature grid for the LTE short-characteristics VET solver.
 //!
 //! Implements the Bruls et al. (1999, A&A 348, 233) "type-A" discrete-ordinate grid
@@ -16,7 +16,7 @@
 
 #include "athena.hpp"
 
-namespace radiation_vet {
+namespace nr_radiation {
 
 //----------------------------------------------------------------------------------------
 //! \class VETAngularGrid
@@ -27,7 +27,7 @@ class VETAngularGrid {
   VETAngularGrid(int ndim, int nmu);
 
   int ndim;   // 1, 2, or 3
-  int nmu;    // input <radiation_vet>/nmu parameter (number of polar levels)
+  int nmu;    // input <nr_radiation>/nmu parameter (number of polar levels)
   int nang;   // number of unique rays per octant
   int noct;   // number of octants: 2 (1D), 4 (2D), 8 (3D)
 
@@ -44,6 +44,6 @@ class VETAngularGrid {
   void CheckNormalization();
 };
 
-}  // namespace radiation_vet
+}  // namespace nr_radiation
 
-#endif  // RADIATION_VET_VET_QUADRATURE_HPP_
+#endif  // NR_RADIATION_ANGULAR_GRID_HPP_

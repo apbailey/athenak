@@ -3,7 +3,7 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file vet_quadrature.cpp
+//! \file angular_grid.cpp
 //! \brief Construction of the Bruls et al. (1999) type-A angular quadrature grid.
 //!
 //! This is a direct, validated port (host-side, run-once at startup) of the Carlson
@@ -11,9 +11,9 @@
 //! (itself following Bruls et al. 1999, A&A 348, 233, as cited by Davis, Stone & Jiang
 //! 2012 Sec. 3.2). For n_mu<=6 the polar weights are distributed in azimuth by solving
 //! a linear system over "permutation families" of direction-cosine triplets (exact type-A
-//! grid); for n_mu>6 equal weights are used for all rays in an octant, matching the
-//! reference implementation's fallback (Bruls et al. 1999 define the exact grid only for
-//! small n_mu).
+//! grid). Values n_mu>6 are rejected at construction: the equal-weight fallback can
+//! produce negative quadrature weights that violate intensity positivity and invalidate
+//! the Eddington tensor (Bruls et al. 1999 define the exact grid only for n_mu<=6).
 
 #include <algorithm>
 #include <array>
@@ -23,9 +23,9 @@
 #include <vector>
 
 #include "athena.hpp"
-#include "vet_quadrature.hpp"
+#include "nr_radiation/angular_grid.hpp"
 
-namespace radiation_vet {
+namespace nr_radiation {
 
 namespace {
 
@@ -166,7 +166,16 @@ VETAngularGrid::VETAngularGrid(int ndim_in, int nmu_in) :
     ndim(ndim_in), nmu(nmu_in) {
   if (nmu < 1) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "<radiation_vet>/nmu = " << nmu << " must be >= 1" << std::endl;
+      << std::endl << "<nr_radiation>/nmu = " << nmu << " must be >= 1" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (nmu > 6) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/nmu = " << nmu
+      << " exceeds the Bruls type-A exact-grid limit of 6. "
+      << "Values nmu>6 produce negative quadrature weights which violate "
+      << "positivity of the intensity and invalidate the Eddington tensor. "
+      << "Use nmu <= 6." << std::endl;
     std::exit(EXIT_FAILURE);
   }
   if (ndim == 1) {
@@ -222,18 +231,11 @@ void VETAngularGrid::BuildCarlson1D() {
 //! Athena-C angles.c::carlson(), nDim>1 branch, ported verbatim.
 
 void VETAngularGrid::BuildCarlsonND() {
-  // --- polar weights/angles (mu2tmp, wtmp) ---
+  // --- polar weights/angles (mu2tmp, wtmp); nmu<=6 enforced in ctor ---
   std::vector<Real> mu2tmp(nmu);
-  Real deltamu;
-  if (nmu <= 6) {
-    deltamu = 2.0 / (2*nmu - 1);
-    mu2tmp[0] = 1.0 / (3.0 * (2*nmu - 1));
-    for (int i = 1; i < nmu; i++) mu2tmp[i] = mu2tmp[i-1] + deltamu;
-  } else {
-    mu2tmp[0] = 1.0 / SQR((Real)nmu - 1.0);
-    deltamu = (1.0 - 3.0*mu2tmp[0]) / ((Real)nmu - 1.0);
-    for (int i = 1; i < nmu; i++) mu2tmp[i] = mu2tmp[i-1] + deltamu;
-  }
+  Real deltamu = 2.0 / (2*nmu - 1);
+  mu2tmp[0] = 1.0 / (3.0 * (2*nmu - 1));
+  for (int i = 1; i < nmu; i++) mu2tmp[i] = mu2tmp[i-1] + deltamu;
 
   std::vector<Real> Wtmp(std::max(nmu-1,1)), wtmp(nmu);
   Real W2 = 4.0 * mu2tmp[0];
@@ -249,7 +251,7 @@ void VETAngularGrid::BuildCarlsonND() {
   if (nmu > 1) wtmp[nmu-1] = 1.0 - wsum;
   else wtmp[0] = 1.0;
 
-  // --- direction cosines: all (i,j,k)>=0 with i+j+k=nmu-1 -- and, for nmu<=6, the
+  // --- direction cosines: all (i,j,k)>=0 with i+j+k=nmu-1, plus the
   // permutation-family incidence matrix pmat(i,fam) needed to solve for azimuthal
   // weight distribution (Bruls et al. 1999; angles.c::carlson() single combined pass) ---
   std::vector<std::array<Real,3>> mutmp(nang);
@@ -265,17 +267,15 @@ void VETAngularGrid::BuildCarlsonND() {
           mutmp[iang][0] = std::sqrt(mu2tmp[j]);
           mutmp[iang][1] = std::sqrt(mu2tmp[k]);
           mutmp[iang][2] = std::sqrt(mu2tmp[i]);
-          if (nmu <= 6) {
-            int ip = MatchPermutation(i, j, k, pl, np);
-            if (ip == -1) {
-              pl[np] = {i, j, k};
-              if (i < nfam) pmat[i][np] += 1.0;
-              plab[iang] = np;
-              np++;
-            } else {
-              if (i < nfam) pmat[i][ip] += 1.0;
-              plab[iang] = ip;
-            }
+          int ip = MatchPermutation(i, j, k, pl, np);
+          if (ip == -1) {
+            pl[np] = {i, j, k};
+            if (i < nfam) pmat[i][np] += 1.0;
+            plab[iang] = np;
+            np++;
+          } else {
+            if (i < nfam) pmat[i][ip] += 1.0;
+            plab[iang] = ip;
           }
           iang++;
         }
@@ -283,22 +283,18 @@ void VETAngularGrid::BuildCarlsonND() {
     }
   }
 
-  // --- weights: exact type-A permutation-family solve (n_mu<=6), else equal weight ---
+  // --- weights: exact type-A permutation-family solve (nmu<=6, enforced in ctor) ---
   std::vector<Real> wang(nang);
-  if (nmu <= 6) {
-    if (nmu > 1) {
-      std::vector<std::vector<Real>> pinv(nfam, std::vector<Real>(nfam, 0.0));
-      InvertMatrix(pmat, nfam, &pinv);
-      std::vector<Real> wpf(nfam, 0.0);
-      for (int i = 0; i < nfam; i++) {
-        for (int j = 0; j < nfam; j++) wpf[i] += pinv[i][j] * wtmp[j];
-      }
-      for (int i = 0; i < nang; i++) wang[i] = wpf[plab[i]];
-    } else {
-      wang[0] = 1.0;
+  if (nmu > 1) {
+    std::vector<std::vector<Real>> pinv(nfam, std::vector<Real>(nfam, 0.0));
+    InvertMatrix(pmat, nfam, &pinv);
+    std::vector<Real> wpf(nfam, 0.0);
+    for (int i = 0; i < nfam; i++) {
+      for (int j = 0; j < nfam; j++) wpf[i] += pinv[i][j] * wtmp[j];
     }
+    for (int i = 0; i < nang; i++) wang[i] = wpf[plab[i]];
   } else {
-    for (int i = 0; i < nang; i++) wang[i] = 1.0 / (Real)nang;
+    wang[0] = 1.0;
   }
 
   // --- assign signed direction cosines to octants, and finalize weights ---
@@ -375,4 +371,4 @@ void VETAngularGrid::CheckNormalization() {
   }
 }
 
-}  // namespace radiation_vet
+}  // namespace nr_radiation

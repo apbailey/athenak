@@ -23,6 +23,7 @@
 #include "dyn_grmhd/dyn_grmhd.hpp"
 #include "ion-neutral/ion-neutral.hpp"
 #include "radiation/radiation.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 #include "driver.hpp"
 
 #if MPI_PARALLEL_ENABLED
@@ -330,6 +331,10 @@ void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool re
     }
     if (pz4c != nullptr) {
       (void) pmesh->pmb_pack->pz4c->NewTimeStep(this, nexp_stages);
+    }
+    nr_radiation::VET *pnrrad = pmesh->pmb_pack->pnrrad;
+    if (pnrrad != nullptr) {
+      (void) pnrrad->NewTimeStep(this, nexp_stages);
     }
 
     pmesh->NewTimeStep(tlim);

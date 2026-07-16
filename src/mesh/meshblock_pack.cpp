@@ -27,7 +27,7 @@
 #include "diffusion/viscosity.hpp"
 #include "diffusion/resistivity.hpp"
 #include "radiation/radiation.hpp"
-#include "radiation_vet/radiation_vet.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 #include "srcterms/turb_driver.hpp"
 #include "particles/particles.hpp"
 #include "units/units.hpp"
@@ -68,7 +68,7 @@ MeshBlockPack::~MeshBlockPack() {
   }
   if (pturb  != nullptr) {delete pturb;}
   if (prad   != nullptr) {delete prad;}
-  if (pradvet != nullptr) {delete pradvet;}
+  if (pnrrad != nullptr) {delete pnrrad;}
   if (pmhd   != nullptr) {delete pmhd;}
   if (phydro != nullptr) {delete phydro;}
   if (punit  != nullptr) {delete punit;}
@@ -175,19 +175,20 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
     prad = nullptr;
   }
 
-  // (5b) RADIATION_VET (LTE-only short-characteristics VET solver)
+  // (5b) NR_RADIATION (LTE-only short-characteristics VET solver)
   // Deliberately NOT added to the hydro/mhd task-list-assembly exclusion guards above:
-  // unlike the GR <radiation> module, radiation_vet does not take over hydro/mhd's task
+  // unlike the GR <radiation> module, nr_radiation does not take over hydro/mhd's task
   // list -- it inserts its own tasks into the existing "stagen" list assembled by
-  // Hydro/MHD themselves (see RadiationVET::AssembleVETTasks), so that with radiation_vet
+  // Hydro/MHD themselves (see VET::AssembleTasks), so that with nr_radiation
   // disabled, hydro/mhd behavior and task-list assembly are completely unaffected
   // (Rule 4: no impact when radiation is off).
-  if (pin->DoesBlockExist("radiation_vet")) {
-    pradvet = new radiation_vet::RadiationVET(this, pin);
+  if (pin->DoesBlockExist("nr_radiation")) {
+    pnrrad = new nr_radiation::VET(this, pin);
     nphysics++;
-    pradvet->AssembleVETTasks(tl_map);
+    tl_map.insert(std::make_pair("vet_bvals", std::make_shared<TaskList>()));
+    pnrrad->AssembleTasks(tl_map);
   } else {
-    pradvet = nullptr;
+    pnrrad = nullptr;
   }
 
   // (6) TURBULENCE DRIVER

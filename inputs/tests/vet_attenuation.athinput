@@ -1,0 +1,52 @@
+<comment>
+problem = nr_radiation VET 1D attenuation unit test
+
+# 1D uniform slab, constant absorption opacity chi, zero source, incoming beam I_bc at the
+# upwind boundary. Pure absorption -> I = I_bc*exp(-tau). Aborts if error exceeds tol.
+
+<job>
+basename = ut_vet_attenuation
+
+<mesh>
+nghost = 2
+nx1    = 64
+x1min  = 0.0
+x1max  = 1.0
+ix1_bc = outflow
+ox1_bc = outflow
+nx2    = 1
+x2min  = 0.0
+x2max  = 1.0
+ix2_bc = periodic
+ox2_bc = periodic
+nx3    = 1
+x3min  = 0.0
+x3max  = 1.0
+ix3_bc = periodic
+ox3_bc = periodic
+
+<meshblock>
+nx1 = 64
+nx2 = 1
+nx3 = 1
+
+<time>
+evolution  = static
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0
+tlim       = 0.0
+
+<nr_radiation>
+nmu          = 3
+opa          = 1.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+
+<problem>
+pgen_name = vet_attenuation
+chi  = 2.0
+i_bc = 1.0
+tol  = 1.0e-10

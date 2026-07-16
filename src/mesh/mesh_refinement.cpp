@@ -28,6 +28,7 @@
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "radiation/radiation.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 #include "coordinates/adm.hpp"
 #include "z4c/z4c.hpp"
 #include "z4c/z4c_amr.hpp"
@@ -163,6 +164,9 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
     }
     if (pmbp->pz4c != nullptr) {
       (void) pmbp->pz4c->NewTimeStep(pdriver, pdriver->nexp_stages);
+    }
+    if (pmbp->pnrrad != nullptr) {
+      (void) pmbp->pnrrad->NewTimeStep(pdriver, pdriver->nexp_stages);
     }
 
     nmb_created += nnew;

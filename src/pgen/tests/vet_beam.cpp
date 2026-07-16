@@ -3,10 +3,11 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the AthenaK collaboration
 // Licensed under the 3-clause BSD License, see LICENSE file for details
 //========================================================================================
-//! \file radvet_beam.cpp
+//! \file vet_beam.cpp
 //! \brief Pencil-beam test for the LTE short-characteristics VET solver.
 //! Ported from Athena-C beam2d.c. Injects unit intensity at selected boundary cells along
-//! a chosen discrete-ordinate angle; chi=const, B=0 (Davis 2012 Fig. 6 linear-interp).
+//! a chosen discrete-ordinate angle; chi=const (= opa since affect_fluid=false means
+//! UpdateOpacityAndSource uses opa directly), B=0 (Davis 2012 Fig. 6 linear-interp).
 
 #include <cmath>
 #include <cstdio>
@@ -18,7 +19,7 @@
 #include "hydro/hydro.hpp"
 #include "eos/eos.hpp"
 #include "pgen/pgen.hpp"
-#include "radiation_vet/radiation_vet.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 
 namespace {
 struct BeamVars {
@@ -29,9 +30,9 @@ struct BeamVars {
 };
 BeamVars beamvars;
 
-void RadvetBeamBCs(Mesh *pm) {
+void VETBeamBCs(Mesh *pm) {
   MeshBlockPack *pmbp = pm->pmb_pack;
-  if (pmbp->pradvet == nullptr) return;
+  if (pmbp->pnrrad == nullptr) return;
   auto &indcs = pm->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
@@ -41,15 +42,14 @@ void RadvetBeamBCs(Mesh *pm) {
   int n2 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*ng) : 1;
   int n3 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*ng) : 1;
   int nmb = pmbp->nmb_thispack;
-  int nang = pmbp->pradvet->pang->nang;
-  int nang_tot = pmbp->pradvet->nang_tot;
+  int nang = pmbp->pnrrad->pang->nang;
+  int nang_tot = pmbp->pnrrad->nang_tot;
   int nx1 = indcs.nx1, nx2 = indcs.nx2;
   int iang = beamvars.iang;
   int ihor1 = beamvars.ihor1, ihor2 = beamvars.ihor2;
   int ivert1 = beamvars.ivert1, ivert2 = beamvars.ivert2;
   LogicalLocation *lloc = pm->lloc_eachmb;
 
-  // hydro: user faces -> outflow copy
   if (pmbp->phydro != nullptr) {
     auto u0 = pmbp->phydro->u0;
     int nvar = u0.extent_int(1);
@@ -76,8 +76,7 @@ void RadvetBeamBCs(Mesh *pm) {
     }
   }
 
-  // radiation pencils: host fill (sparse boundary injection)
-  auto ir = pmbp->pradvet->ir;
+  auto ir = pmbp->pnrrad->ir;
   auto ir_h = Kokkos::create_mirror_view(ir);
   Kokkos::deep_copy(ir_h, ir);
   auto mb_bcs_h = pmbp->pmb->mb_bcs.h_view;
@@ -126,11 +125,11 @@ void RadvetBeamBCs(Mesh *pm) {
   Kokkos::deep_copy(ir, ir_h);
 }
 
-void RadvetBeamErrors(ParameterInput *pin, Mesh *pm) {
+void VETBeamErrors(ParameterInput *pin, Mesh *pm) {
   (void)pin;
-  auto *prv = pm->pmb_pack->pradvet;
+  auto *prv = pm->pmb_pack->pnrrad;
   if (prv == nullptr) return;
-  std::cout << "radvet_beam: last_niter=" << prv->last_niter << std::endl;
+  std::cout << "vet_beam: last_niter=" << prv->last_niter << std::endl;
   auto j_h = Kokkos::create_mirror_view(prv->jmean);
   Kokkos::deep_copy(j_h, prv->jmean);
   auto &indcs = pm->mb_indcs;
@@ -140,9 +139,8 @@ void RadvetBeamErrors(ParameterInput *pin, Mesh *pm) {
     for (int j=indcs.js; j<=indcs.je; ++j)
       for (int i=indcs.is; i<=indcs.ie; ++i)
         jmx = std::max(jmx, j_h(m,indcs.ks,j,i));
-  std::cout << "radvet_beam: max(J)=" << jmx << std::endl;
+  std::cout << "vet_beam: max(J)=" << jmx << std::endl;
 
-  // Dump jmean to raw binary for post-processing plots
   FILE *fp = std::fopen("jmean_dump.bin", "wb");
   if (fp) {
     int nx1 = indcs.nx1, nx2 = indcs.nx2;
@@ -160,9 +158,9 @@ void RadvetBeamErrors(ParameterInput *pin, Mesh *pm) {
 }
 }  // namespace
 
-void ProblemGenerator::RadvetBeam(ParameterInput *pin, const bool restart) {
-  user_bcs_func = RadvetBeamBCs;
-  pgen_final_func = RadvetBeamErrors;
+void ProblemGenerator::VETBeam(ParameterInput *pin, const bool restart) {
+  user_bcs_func = VETBeamBCs;
+  pgen_final_func = VETBeamErrors;
 
   beamvars.iang   = pin->GetOrAddInteger("problem", "iang", 2);
   beamvars.ihor1  = pin->GetOrAddInteger("problem", "ihor1", 96);
@@ -174,17 +172,17 @@ void ProblemGenerator::RadvetBeam(ParameterInput *pin, const bool restart) {
   if (restart) return;
 
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
-  if (pmbp->pradvet == nullptr || pmbp->phydro == nullptr) {
-    std::cout << "### FATAL ERROR: radvet_beam needs <hydro> and <radiation_vet>"
+  if (pmbp->pnrrad == nullptr || pmbp->phydro == nullptr) {
+    std::cout << "### FATAL ERROR: vet_beam needs <hydro> and <nr_radiation>"
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  auto &pang = *pmbp->pradvet->pang;
+  auto &pang = *pmbp->pnrrad->pang;
   if (beamvars.iang < 0 || beamvars.iang >= pang.nang) {
     std::cout << "### FATAL ERROR: problem/iang out of range" << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  std::cout << "radvet_beam: iang=" << beamvars.iang
+  std::cout << "vet_beam: iang=" << beamvars.iang
             << " mu0=(" << pang.mu.h_view(0,beamvars.iang,0) << ","
             << pang.mu.h_view(0,beamvars.iang,1) << ")" << std::endl;
 
@@ -196,7 +194,7 @@ void ProblemGenerator::RadvetBeam(ParameterInput *pin, const bool restart) {
   Real gm1 = pmbp->phydro->peos->eos_data.gamma - 1.0;
   Real dens = beamvars.dens, pgas = beamvars.pgas;
   int nmb1 = pmbp->nmb_thispack - 1;
-  par_for("radvet_beam_ic", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  par_for("vet_beam_ic", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     u0(m,IDN,k,j,i) = dens;
     u0(m,IM1,k,j,i) = 0.0;
