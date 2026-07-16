@@ -147,13 +147,14 @@ class VET {
   // MeshBlockPack from the current chi/bb fields and existing ghost-zone intensities.
   void FormalSolution();
 
- private:
-  MeshBlockPack* pmy_pack;
-
-  // sweep implementations called by FormalSolution() (vet/formal_solution.cpp)
+  // Sweep implementations called by FormalSolution(). Public (not private) because
+  // Kokkos CUDA device lambdas cannot be defined inside private/protected members.
   void FormalSolutionWavefront();
   void FormalSolutionDiagonal();
   void FormalSolutionJacobi();
+
+ private:
+  MeshBlockPack* pmy_pack;
 };
 
 }  // namespace nr_radiation
