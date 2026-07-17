@@ -1,9 +1,10 @@
 <comment>
-problem = nr_radiation VET non-LTE atmosphere (Davis 2012 Eq. 30) Jacobi-ALI test
-# Semi-infinite: vacuum at τ=0 (ix1 inflow I=0), thermalized deep end (ox1 inflow I=B)
+problem = nr_radiation VET Eq. 30 via production SolveTransfer (1 cycle)
+# Pgen only sets ICs; ALI runs in before_timeintegrator SolveTransfer
+# No hydro: nofluid opacity path preserves pgen planck/bb
 
 <job>
-basename = ut_vet_atmosphere
+basename = ut_vet_atmosphere_st
 
 <mesh>
 nghost = 2
@@ -29,11 +30,11 @@ nx2 = 1
 nx3 = 1
 
 <time>
-evolution  = static
+evolution  = dynamic
 integrator = rk2
 cfl_number = 0.3
-nlim       = 0
-tlim       = 0.0
+nlim       = 1
+tlim       = 1.0e10
 
 <nr_radiation>
 nmu          = 3
@@ -52,6 +53,7 @@ ali_tol      = 1.0e-6
 pgen_name = vet_atmosphere
 chi    = 40.0
 source = 1.0
-tol    = 5.0e-2
-require_analytic = true
+tol    = 8.0e-2
+use_solve_transfer = true
+require_analytic = false
 max_ali_iters = 5000

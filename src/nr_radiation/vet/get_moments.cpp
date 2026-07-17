@@ -5,7 +5,7 @@
 //========================================================================================
 //! \file get_moments.cpp
 //! \brief Radiation moment quadrature (Davis 2012 Eq. 17-19) and apb_rad-convention
-//! coupling: Q = chi * crat * prat * (J - S) with S = T^4 (LTE).
+//! coupling: Q = eps * chi * crat * prat * (J - B) (Davis Eq. 27 absorption form).
 //! Moments array ordering (Athena++ convention):
 //!   n=0:J, 1-3:H_1,H_2,H_3, 4:K_11, 5:K_22, 6:K_33, 7:K_12, 8:K_13, 9:K_23
 

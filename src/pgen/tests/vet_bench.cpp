@@ -61,7 +61,7 @@ void ProblemGenerator::VETBench(ParameterInput *pin, const bool restart) {
   par_for("vet_bench_setup", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     chi_a(m,k,j,i) = chi;
-    bb_a(m,k,j,i)  = b;
+    bb_a(m,0,k,j,i)  = b;
   });
   // intensity = b everywhere (incl. ghosts) -> I == b is the exact steady state
   par_for("vet_bench_ir", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
@@ -104,7 +104,7 @@ void ProblemGenerator::VETBench(ParameterInput *pin, const bool restart) {
   par_for("vet_bench_nonuni", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     chi_a(m,k,j,i) = chi*(1.0 + 0.10*(i%3));
-    bb_a(m,k,j,i)  = b*(1.0 + 0.25*((i%5) + (j%7) + (k%4)));
+    bb_a(m,0,k,j,i)  = b*(1.0 + 0.25*((i%5) + (j%7) + (k%4)));
   });
   auto zero_ir = [&]() {
     par_for("vet_bench_zero", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),

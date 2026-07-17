@@ -27,8 +27,9 @@ namespace nr_radiation {
 VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
     ir("vet_ir",1,1,1,1,1),
     coarse_ir("vet_coarse_ir",1,1,1,1,1),
+    bb("vet_bb",1,1,1,1,1),
+    coarse_bb("vet_coarse_bb",1,1,1,1,1),
     chi("vet_chi",1,1,1,1),
-    bb("vet_bb",1,1,1,1),
     planck("vet_planck",1,1,1,1),
     jmean("vet_jmean",1,1,1,1),
     jmean_old("vet_jmean_old",1,1,1,1),
@@ -76,6 +77,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   iter_tol = pin->GetOrAddReal("nr_radiation", "iter_tol", 1.0e-6);
   ali_tol  = pin->GetOrAddReal("nr_radiation", "ali_tol", 1.0e-5);
   last_niter = 0;
+  last_max_rel = 0.0;
   cnv_flag = false;
 
   if (itermin < 1) itermin = 1;
@@ -103,6 +105,14 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   // Activate Jacobi-ALI when scattering is present
   use_ali = (ops > 0.0) || (use_eps_uniform && eps_uniform < 1.0);
 
+  // Unordered jacobi sweep races on upwind I — not safe for ALI accuracy claims
+  if (use_ali && sweep_method == "jacobi") {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/sweep = 'jacobi' is incompatible with ALI "
+      << "(eps < 1 or ops > 0); use 'wavefront' or 'diagonal'" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+
   // Frequency scaffold (gray default)
   nfreq = pin->GetOrAddInteger("nr_radiation", "nfreq", 1);
   Kokkos::realloc(wfreq, nfreq);
@@ -126,8 +136,8 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*(indcs.ng)) : 1;
 
   Kokkos::realloc(ir, nmb, nang_tot, ncells3, ncells2, ncells1);
+  Kokkos::realloc(bb, nmb, 1, ncells3, ncells2, ncells1);
   Kokkos::realloc(chi, nmb, ncells3, ncells2, ncells1);
-  Kokkos::realloc(bb, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(planck, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(jmean, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(jmean_old, nmb, ncells3, ncells2, ncells1);
@@ -137,6 +147,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(eps,     nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(lamstr,  nmb, ncells3, ncells2, ncells1);
   Kokkos::deep_copy(ir, 0.0);
+  Kokkos::deep_copy(bb, 0.0);
   Kokkos::deep_copy(jmean, 0.0);
   Kokkos::deep_copy(qrad, 0.0);
   Kokkos::deep_copy(moments, 0.0);
@@ -144,9 +155,8 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::deep_copy(eps, 1.0);
   Kokkos::deep_copy(lamstr, 0.0);
   Kokkos::deep_copy(planck, 0.0);
-  Kokkos::deep_copy(bb, 0.0);
 
-  // coarse_ir for SMR/AMR (CC Restrict/Prolong)
+  // coarse_ir / coarse_bb for SMR/AMR (CC Restrict/Prolong)
   {
     int nccells1 = indcs.cnx1 + 2*(indcs.ng);
     int nccells2 = (indcs.cnx2 > 1) ? (indcs.cnx2 + 2*(indcs.ng)) : 1;
@@ -155,7 +165,9 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
     if (nccells2 < 1) nccells2 = ncells2;
     if (nccells3 < 1) nccells3 = ncells3;
     Kokkos::realloc(coarse_ir, nmb, nang_tot, nccells3, nccells2, nccells1);
+    Kokkos::realloc(coarse_bb, nmb, 1, nccells3, nccells2, nccells1);
     Kokkos::deep_copy(coarse_ir, 0.0);
+    Kokkos::deep_copy(coarse_bb, 0.0);
   }
 
   // Inflow BC table (nang_tot, 6 faces): default vacuum
@@ -168,6 +180,8 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
 
   pbval_ir = new MeshBoundaryValuesCC(ppack, pin, false);
   pbval_ir->InitializeBuffers(nang_tot);
+  pbval_bb = new MeshBoundaryValuesCC(ppack, pin, false);
+  pbval_bb->InitializeBuffers(1);
 
   dtnew = std::numeric_limits<Real>::max();
 }
@@ -176,6 +190,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
 // destructor
 
 VET::~VET() {
+  delete pbval_bb;
   delete pbval_ir;
   delete pang;
 }

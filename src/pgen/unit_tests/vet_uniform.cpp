@@ -53,10 +53,13 @@ void VETUniformFinal(ParameterInput *pin, Mesh *pm) {
   const Real b = pin->GetOrAddReal("problem", "source", 1.0);
   const Real tol = pin->GetOrAddReal("problem", "tol", 1.0e-12);
 
-  // Restrict → fill coarse ghosts → prolongate (same order as vet_bvals / GR radiation)
+  // Restrict → fill coarse ghosts → prolongate for ir and bb (same order as vet_bvals)
   pm->pmr->RestrictCC(pvet->ir, pvet->coarse_ir);
   pvet->pbval_ir->FillCoarseInBndryCC(pvet->ir, pvet->coarse_ir);
   pvet->pbval_ir->ProlongateCC(pvet->ir, pvet->coarse_ir);
+  pm->pmr->RestrictCC(pvet->bb, pvet->coarse_bb);
+  pvet->pbval_bb->FillCoarseInBndryCC(pvet->bb, pvet->coarse_bb);
+  pvet->pbval_bb->ProlongateCC(pvet->bb, pvet->coarse_bb);
   Kokkos::fence();
 
   Real max_err = MaxRelErrIr(pm, pvet, b);
@@ -65,8 +68,27 @@ void VETUniformFinal(ParameterInput *pin, Mesh *pm) {
               << max_err << " > tol " << tol << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  std::cout << "VET uniform SMR Restrict/Prolong PASSED: max rel err = "
-            << max_err << std::endl;
+  // constant-S identity for bb after Restrict/Prolong
+  auto &indcs = pm->mb_indcs;
+  const int is = indcs.is, ie = indcs.ie, js = indcs.js, je = indcs.je;
+  const int ks = indcs.ks, ke = indcs.ke;
+  const int nmb1 = pm->pmb_pack->nmb_thispack - 1;
+  auto bb_h = Kokkos::create_mirror_view(pvet->bb);
+  Kokkos::deep_copy(bb_h, pvet->bb);
+  Real max_err_bb = 0.0;
+  for (int m = 0; m <= nmb1; ++m)
+  for (int k = ks; k <= ke; ++k)
+  for (int j = js; j <= je; ++j)
+  for (int i = is; i <= ie; ++i) {
+    max_err_bb = std::max(max_err_bb, std::fabs(bb_h(m,0,k,j,i) - b) / b);
+  }
+  if (max_err_bb > tol) {
+    std::cout << "### VET uniform SMR FAILED bb Restrict/Prolong: max rel err = "
+              << max_err_bb << " > tol " << tol << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  std::cout << "VET uniform SMR Restrict/Prolong PASSED: max rel err(ir) = "
+            << max_err << " max rel err(bb) = " << max_err_bb << std::endl;
 }
 
 }  // namespace
@@ -104,7 +126,7 @@ void ProblemGenerator::VETUniform(ParameterInput *pin, const bool restart) {
   par_for("vet_uni_setup", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     chi_a(m,k,j,i) = chi;
-    bb_a(m,k,j,i)  = b;
+    bb_a(m,0,k,j,i)  = b;
   });
   // intensity initialized to b everywhere (incl. ghosts -> upwind boundary is also b)
   par_for("vet_uni_ir", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),

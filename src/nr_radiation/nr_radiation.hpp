@@ -8,7 +8,7 @@
 //! \file nr_radiation.hpp
 //! \brief definitions for the VET class: short-characteristics radiation solver following
 //! Davis, Stone & Jiang (2012). Supports LTE (ε=1) boundary-lag iteration and Jacobi-ALI
-//! scattering (Eq. 22–25). SMR/AMR via CC Restrict/Prolong of ir (same path as GR rad).
+//! scattering (Eq. 22–25). SMR/AMR via CC Restrict/Prolong of ir and bb (source S).
 //!
 //! Opacity/coupling:
 //!   chi = (opa + ops) * rho     total extinction
@@ -41,6 +41,7 @@ struct VETTaskIDs {
   TaskID vet_newdt;  // radiation-relaxation timestep (stagen, after hydro/mhd newdt)
   // boundary-exchange tasks for the "vet_bvals" task list (driven by ExecuteTaskList)
   TaskID ir_irecv, ir_rest, ir_send, ir_recv, ir_bcs, ir_prol, ir_csend, ir_crecv;
+  TaskID bb_irecv, bb_rest, bb_send, bb_recv, bb_bcs, bb_prol, bb_csend, bb_crecv;
 };
 
 //----------------------------------------------------------------------------------------
@@ -82,15 +83,19 @@ class VET {
   Real iter_tol;     // LTE residual: max|ΔJ/J|
   Real ali_tol;      // ALI residual: max|ΔS/S| (Eq. 25)
   int last_niter;    // diagnostic: number of iterations used in the most recent solve
+  Real last_max_rel; // diagnostic: final residual from most recent solve
   bool cnv_flag;     // true if last SolveTransfer converged
 
   // intensity array: (nmb, nang_tot, nx3, nx2, nx1) with ghost zones, persistent
   DvceArray5D<Real> ir;
   DvceArray5D<Real> coarse_ir;
 
+  // source iterate S: (nmb, 1, nx3, nx2, nx1) — nvar=1 for PackAndSendCC
+  DvceArray5D<Real> bb;
+  DvceArray5D<Real> coarse_bb;
+
   // per-zone radiation quantities (nmb,nx3,nx2,nx1)
   DvceArray4D<Real> chi;     // total opacity χ = (opa+ops)*ρ
-  DvceArray4D<Real> bb;      // source iterate S (FormalSolution reads this)
   DvceArray4D<Real> planck;  // thermal Planck B = T^4
   DvceArray4D<Real> jmean;   // mean intensity J (Eq. 17)
   DvceArray4D<Real> jmean_old;  // previous iteration J (LTE residual scratch)
@@ -107,8 +112,9 @@ class VET {
   // radiation moments: n=0:J, 1-3:H_1,H_2,H_3, 4-9:K_11,K_22,K_33,K_12,K_13,K_23
   DvceArray5D<Real> moments;
 
-  // boundary communication buffers/functions for ir
+  // boundary communication: separate MeshBoundaryValuesCC for ir and bb
   MeshBoundaryValuesCC *pbval_ir = nullptr;
+  MeshBoundaryValuesCC *pbval_bb = nullptr;
 
   Real dtnew;
 
@@ -128,12 +134,24 @@ class VET {
   TaskStatus ClearSendIr(Driver *pdrive, int stage);
   TaskStatus ClearRecvIr(Driver *pdrive, int stage);
 
+  TaskStatus InitRecvBb(Driver *pdrive, int stage);
+  TaskStatus RestrictBb(Driver *pdrive, int stage);
+  TaskStatus SendBb(Driver *pdrive, int stage);
+  TaskStatus RecvBb(Driver *pdrive, int stage);
+  TaskStatus ApplyPhysicalBCsBb(Driver *pdrive, int stage);
+  TaskStatus ProlongateBb(Driver *pdrive, int stage);
+  TaskStatus ClearSendBb(Driver *pdrive, int stage);
+  TaskStatus ClearRecvBb(Driver *pdrive, int stage);
+
   // stagen task: radiation-relaxation timestep
   TaskStatus NewTimeStep(Driver *pdrive, int stage);
 
   // helpers called from SolveTransfer
   void UpdateOpacityAndSource();
   void ApplyPhysicalBCs();
+  void ApplyPhysicalBCsSource();
+  //! Synchronous ir+bb exchange (same ops as vet_bvals; for unit tests without Driver)
+  void ExchangeBoundariesSync();
   void ComputeJ();
   void CalculateMoments();
   void ComputeQrad();

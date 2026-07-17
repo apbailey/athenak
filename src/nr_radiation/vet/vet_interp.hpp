@@ -99,7 +99,8 @@ void InterpQuadSourceSlopeLim(Real dtaum, Real dtaup, Real S0, Real S1, Real S2,
 //! InterpQuadSourceSlopeLim. Returns the updated intensity for cell (m,angg,k,j,i).
 //!
 //! Parameters:
-//!   chi_, bb_  — opacity and source-function arrays (nmb,nx3,nx2,nx1)
+//!   chi_       — opacity (nmb,nx3,nx2,nx1)
+//!   bb_        — source S as 5D (nmb,1,nx3,nx2,nx1) for CC boundary exchange
 //!   ir_        — intensity array (nmb,nang_tot,nx3,nx2,nx1)
 //!   m, angg    — meshblock and flattened angle index
 //!   i, j, k    — cell indices in the active domain
@@ -112,7 +113,7 @@ void InterpQuadSourceSlopeLim(Real dtaum, Real dtaup, Real S0, Real S1, Real S2,
 
 KOKKOS_INLINE_FUNCTION
 Real UpdateCellSC(
-    const DvceArray4D<Real> &chi_, const DvceArray4D<Real> &bb_,
+    const DvceArray4D<Real> &chi_, const DvceArray5D<Real> &bb_,
     const DvceArray5D<Real> &ir_, int m, int angg,
     int i, int j, int k,
     int sx, int sy, int sz,
@@ -122,15 +123,15 @@ Real UpdateCellSC(
     Real *a1_out) {
   int im = i - sx, ip = i + sx;
   Real chi1 = chi_(m,k,j,i);
-  Real S1   = bb_(m,k,j,i);
+  Real S1   = bb_(m,0,k,j,i);
 
   Real S0, S2, chi0, chi2, imu0, dtaum, dtaup;
 
   if (ndim == 1) {
     chi0 = chi_(m,ks,js,im);
     chi2 = chi_(m,ks,js,ip);
-    S0   = bb_(m,ks,js,im);
-    S2   = bb_(m,ks,js,ip);
+    S0   = bb_(m,0,ks,js,im);
+    S2   = bb_(m,0,ks,js,ip);
     imu0 = ir_(m,angg,ks,js,im);
     dtaum = InterpQuadChi(chi0,chi1,chi2) * dx1 / fabs(mux);
     dtaup = InterpQuadChi(chi2,chi1,chi0) * dx1 / fabs(mux);
@@ -139,8 +140,8 @@ Real UpdateCellSC(
     Real am = fabs((dx2*mux) / (dx1*muy));
     if (am <= 1.0) {
       Real am1 = 1.0 - am;
-      S0    = am*bb_(m,ks,jm,im)  + am1*bb_(m,ks,jm,i);
-      S2    = am*bb_(m,ks,jp,ip)  + am1*bb_(m,ks,jp,i);
+      S0    = am*bb_(m,0,ks,jm,im)  + am1*bb_(m,0,ks,jm,i);
+      S2    = am*bb_(m,0,ks,jp,ip)  + am1*bb_(m,0,ks,jp,i);
       chi0  = am*chi_(m,ks,jm,im) + am1*chi_(m,ks,jm,i);
       chi2  = am*chi_(m,ks,jp,ip) + am1*chi_(m,ks,jp,i);
       imu0  = am*ir_(m,angg,ks,jm,im) + am1*ir_(m,angg,ks,jm,i);
@@ -149,8 +150,8 @@ Real UpdateCellSC(
     } else {
       Real bm  = 1.0/am;
       Real bm1 = 1.0 - bm;
-      S0    = bm*bb_(m,ks,jm,im)  + bm1*bb_(m,ks,j,im);
-      S2    = bm*bb_(m,ks,jp,ip)  + bm1*bb_(m,ks,j,ip);
+      S0    = bm*bb_(m,0,ks,jm,im)  + bm1*bb_(m,0,ks,j,im);
+      S2    = bm*bb_(m,0,ks,jp,ip)  + bm1*bb_(m,0,ks,j,ip);
       chi0  = bm*chi_(m,ks,jm,im) + bm1*chi_(m,ks,j,im);
       chi2  = bm*chi_(m,ks,jp,ip) + bm1*chi_(m,ks,j,ip);
       imu0  = bm*ir_(m,angg,ks,jm,im) + bm1*ir_(m,angg,ks,j,im);
@@ -168,14 +169,14 @@ Real UpdateCellSC(
       Real am_r = lmin/ly, bm = lmin/lz;
       Real c0 = (1.0-am_r)*(1.0-bm), c1_ = (1.0-am_r)*bm;
       Real c2_ = am_r*bm, c3 = am_r*(1.0-bm);
-      S0    = c0*bb_(m,k ,j ,im) + c1_*bb_(m,km,j ,im) +
-              c2_*bb_(m,km,jm,im) + c3*bb_(m,k ,jm,im);
+      S0    = c0*bb_(m,0,k ,j ,im) + c1_*bb_(m,0,km,j ,im) +
+              c2_*bb_(m,0,km,jm,im) + c3*bb_(m,0,k ,jm,im);
       chi0  = c0*chi_(m,k ,j ,im) + c1_*chi_(m,km,j ,im) +
               c2_*chi_(m,km,jm,im) + c3*chi_(m,k ,jm,im);
       imu0  = c0*ir_(m,angg,k ,j ,im) + c1_*ir_(m,angg,km,j ,im) +
               c2_*ir_(m,angg,km,jm,im) + c3*ir_(m,angg,k ,jm,im);
-      S2    = c0*bb_(m,k ,j ,ip) + c1_*bb_(m,kp,j ,ip) +
-              c2_*bb_(m,kp,jp,ip) + c3*bb_(m,k ,jp,ip);
+      S2    = c0*bb_(m,0,k ,j ,ip) + c1_*bb_(m,0,kp,j ,ip) +
+              c2_*bb_(m,0,kp,jp,ip) + c3*bb_(m,0,k ,jp,ip);
       chi2  = c0*chi_(m,k ,j ,ip) + c1_*chi_(m,kp,j ,ip) +
               c2_*chi_(m,kp,jp,ip) + c3*chi_(m,k ,jp,ip);
       dtaum = InterpQuadChi(chi0,chi1,chi2) * dx1/fabs(mux);
@@ -184,14 +185,14 @@ Real UpdateCellSC(
       Real am_r = lmin/lx, bm = lmin/lz;
       Real c0 = (1.0-am_r)*(1.0-bm), c1_ = (1.0-am_r)*bm;
       Real c2_ = am_r*bm, c3 = am_r*(1.0-bm);
-      S0    = c0*bb_(m,k ,jm,i ) + c1_*bb_(m,km,jm,i ) +
-              c2_*bb_(m,km,jm,im) + c3*bb_(m,k ,jm,im);
+      S0    = c0*bb_(m,0,k ,jm,i ) + c1_*bb_(m,0,km,jm,i ) +
+              c2_*bb_(m,0,km,jm,im) + c3*bb_(m,0,k ,jm,im);
       chi0  = c0*chi_(m,k ,jm,i ) + c1_*chi_(m,km,jm,i ) +
               c2_*chi_(m,km,jm,im) + c3*chi_(m,k ,jm,im);
       imu0  = c0*ir_(m,angg,k ,jm,i ) + c1_*ir_(m,angg,km,jm,i ) +
               c2_*ir_(m,angg,km,jm,im) + c3*ir_(m,angg,k ,jm,im);
-      S2    = c0*bb_(m,k ,jp,i ) + c1_*bb_(m,kp,jp,i ) +
-              c2_*bb_(m,kp,jp,ip) + c3*bb_(m,k ,jp,ip);
+      S2    = c0*bb_(m,0,k ,jp,i ) + c1_*bb_(m,0,kp,jp,i ) +
+              c2_*bb_(m,0,kp,jp,ip) + c3*bb_(m,0,k ,jp,ip);
       chi2  = c0*chi_(m,k ,jp,i ) + c1_*chi_(m,kp,jp,i ) +
               c2_*chi_(m,kp,jp,ip) + c3*chi_(m,k ,jp,ip);
       dtaum = InterpQuadChi(chi0,chi1,chi2) * dx2/fabs(muy);
@@ -200,14 +201,14 @@ Real UpdateCellSC(
       Real am_r = lmin/lx, bm = lmin/ly;
       Real c0 = (1.0-am_r)*(1.0-bm), c1_ = (1.0-am_r)*bm;
       Real c2_ = am_r*bm, c3 = am_r*(1.0-bm);
-      S0    = c0*bb_(m,km,j ,i ) + c1_*bb_(m,km,jm,i ) +
-              c2_*bb_(m,km,jm,im) + c3*bb_(m,km,j ,im);
+      S0    = c0*bb_(m,0,km,j ,i ) + c1_*bb_(m,0,km,jm,i ) +
+              c2_*bb_(m,0,km,jm,im) + c3*bb_(m,0,km,j ,im);
       chi0  = c0*chi_(m,km,j ,i ) + c1_*chi_(m,km,jm,i ) +
               c2_*chi_(m,km,jm,im) + c3*chi_(m,km,j ,im);
       imu0  = c0*ir_(m,angg,km,j ,i ) + c1_*ir_(m,angg,km,jm,i ) +
               c2_*ir_(m,angg,km,jm,im) + c3*ir_(m,angg,km,j ,im);
-      S2    = c0*bb_(m,kp,j ,i ) + c1_*bb_(m,kp,jp,i ) +
-              c2_*bb_(m,kp,jp,ip) + c3*bb_(m,kp,j ,ip);
+      S2    = c0*bb_(m,0,kp,j ,i ) + c1_*bb_(m,0,kp,jp,i ) +
+              c2_*bb_(m,0,kp,jp,ip) + c3*bb_(m,0,kp,j ,ip);
       chi2  = c0*chi_(m,kp,j ,i ) + c1_*chi_(m,kp,jp,i ) +
               c2_*chi_(m,kp,jp,ip) + c3*chi_(m,kp,j ,ip);
       dtaum = InterpQuadChi(chi0,chi1,chi2) * dx3/fabs(muz);

@@ -57,7 +57,7 @@ void ProblemGenerator::VETAttenuation(ParameterInput *pin, const bool restart) {
   par_for("vet_att_setup", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     chi_a(m,k,j,i) = chi;
-    bb_a(m,k,j,i)  = 0.0;
+    bb_a(m,0,k,j,i)  = 0.0;
   });
   // zero the intensity field
   par_for("vet_att_ir0", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),

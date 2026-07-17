@@ -1,9 +1,10 @@
 <comment>
-problem = nr_radiation VET non-LTE atmosphere (Davis 2012 Eq. 30) Jacobi-ALI test
-# Semi-infinite: vacuum at τ=0 (ix1 inflow I=0), thermalized deep end (ox1 inflow I=B)
+problem = nr_radiation VET Eq. 30 Jacobi-ALI with 2 MeshBlocks (bb+ir ghost exchange)
+# Same physics as vet_atmosphere; require_analytic=false — pass on ALI convergence.
+# Compare sumJ_dx to 1-block run in smoke_vet_tests.py
 
 <job>
-basename = ut_vet_atmosphere
+basename = ut_vet_atmosphere_2mb
 
 <mesh>
 nghost = 2
@@ -24,7 +25,7 @@ ix3_bc = periodic
 ox3_bc = periodic
 
 <meshblock>
-nx1 = 128
+nx1 = 64
 nx2 = 1
 nx3 = 1
 
@@ -52,6 +53,6 @@ ali_tol      = 1.0e-6
 pgen_name = vet_atmosphere
 chi    = 40.0
 source = 1.0
-tol    = 5.0e-2
-require_analytic = true
+tol    = 8.0e-2
+require_analytic = false
 max_ali_iters = 5000
