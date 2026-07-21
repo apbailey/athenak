@@ -40,6 +40,7 @@
 #include "outputs/outputs.hpp"
 #include "driver/driver.hpp"
 #include "utils/utils.hpp"
+#include "utils/perf.hpp"
 
 // MPI/OpenMP headers
 #if MPI_PARALLEL_ENABLED
@@ -285,6 +286,10 @@ int main(int argc, char *argv[]) {
 #endif
     return(0);
   }
+
+  // Enable perf diagnostics by scanning <output file_type=perf> blocks now -- after the command
+  // line is applied and BEFORE any kernel runs (Kokkos callbacks must be live before mesh/pgen).
+  perf::Enable(pinput);
 
   //--- Step 4. --------------------------------------------------------------------------
   // Construct Mesh.  Then build MeshBlockTree and add MeshBlockPack containing MeshBlocks

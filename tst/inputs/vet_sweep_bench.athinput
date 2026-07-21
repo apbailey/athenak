@@ -1,0 +1,64 @@
+<comment>
+problem = VET short-characteristics sweep throughput benchmark (uniform medium)
+
+# Reproduces the retired vet_bench workload through the file-based perf framework. The vet_uniform
+# pgen sets a uniform medium (constant chi, S=b, I=b steady state); driven with evolution=dynamic +
+# nlim=1, the before_timeintegrator SolveTransfer runs the ALI loop. Because I==b is the exact steady
+# state the residual is ~0 from the first sweep, so itermin (min iterations) alone sets the count:
+# with itermin=iter_max=N, SolveTransfer does EXACTLY N full-cost FormalSolution sweeps -- a
+# controlled, fixed-effort throughput run, timed by the kernels+iteration probes (no perf block here;
+# performance_driver.py injects one). Sweep method (wavefront|diagonal) and geometry are swept by the
+# config spec (benchmark/compare_sweep/config.py).
+#
+# Defaults below = vet_bench reference geometry (64^3 mesh, 32^3 blocks, nmu=3, 20 sweeps).
+
+<job>
+basename = vet_sweep_bench
+
+<mesh>
+nghost = 2
+nx1    = 64
+x1min  = 0.0
+x1max  = 1.0
+ix1_bc = outflow
+ox1_bc = outflow
+nx2    = 64
+x2min  = 0.0
+x2max  = 1.0
+ix2_bc = outflow
+ox2_bc = outflow
+nx3    = 64
+x3min  = 0.0
+x3max  = 1.0
+ix3_bc = outflow
+ox3_bc = outflow
+
+<meshblock>
+nx1 = 32
+nx2 = 32
+nx3 = 32
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = 1
+tlim       = 1.0e10
+
+<nr_radiation>
+nmu          = 3
+opa          = 1.0
+ops          = 0.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+iter_max     = 20
+itermin      = 20
+ali_tol      = 1.0e-6
+
+<problem>
+pgen_name = vet_uniform
+chi    = 1.0
+source = 1.0
+tol    = 1.0e-12

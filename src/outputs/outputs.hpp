@@ -15,6 +15,7 @@
 
 #include "athena.hpp"
 #include "io_wrapper.hpp"
+#include "utils/perf.hpp"   // perf::Row / perf::PerfProbe for PerfOutput
 
 #define NHISTORY_VARIABLES 20
 #if NHISTORY_VARIABLES > NREDUCTION_VARIABLES
@@ -128,6 +129,7 @@ struct OutputParameters {
   bool user_hist_only;
   std::string data_format;
   bool contains_derived=false;
+  std::string perf_probe;     // <output file_type=perf>: comma-list of probes (empty = all four)
   // DBF parameters for coarsened binary:
   // cannot be less than 2 and must be a power of 2 and
   // cannot be greater than shortest meshblock dimension
@@ -446,6 +448,25 @@ class EventLogOutput : public BaseTypeOutput {
 
   void LoadOutputData(Mesh *pm) override;
   void WriteOutputFile(Mesh *pm, ParameterInput *pin) override;
+};
+
+//----------------------------------------------------------------------------------------
+//! \class PerfOutput
+//  \brief derived BaseTypeOutput class for perf-diagnostics data. One block writes a wide
+//  time-series file <basename>.<probe> per probe it names (perf_probe list; empty = all four),
+//  snapshotting each probe's cumulative Rows() at the block's cadence.
+
+class PerfOutput : public BaseTypeOutput {
+ public:
+  PerfOutput(ParameterInput *pin, Mesh *pm, OutputParameters oparams);
+  void LoadOutputData(Mesh *pm) override;
+  void WriteOutputFile(Mesh *pm, ParameterInput *pin) override;
+ private:
+  std::vector<std::string> probe_names_;         // probes this block writes
+  std::vector<std::vector<perf::Row>> snapshot_; // per-probe rows captured in LoadOutputData
+  std::vector<std::string> header_written_;      // probe names whose header line is already written
+  int snap_cycle_ = 0;
+  Real snap_time_ = 0.0;
 };
 
 //----------------------------------------------------------------------------------------

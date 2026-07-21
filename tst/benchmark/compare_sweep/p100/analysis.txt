@@ -1,0 +1,19 @@
+wavefront vs diagonal   compare_sweep   (commit b0017aa on i17n1.ocelote.hpc.arizona.edu)
+gcaups = cum_niter*cells*nblocks*nang / sweep_s  (higher = faster); one row per problem size
+
+     block  nblocks  nmu   wavefront    diagonal     winner  xfaster
+      32^3        1    3      0.4084      0.8163   diagonal    2.00x
+      32^3        8    3      0.7655      0.6502  wavefront    1.18x
+      32^3       27    3      0.8536      0.6892  wavefront    1.24x
+      32^3       64    3      0.8798      0.6878  wavefront    1.28x
+      48^3        1    3      0.5568      0.6964   diagonal    1.25x
+      64^3        1    3      0.5947      0.6078   diagonal    1.02x
+      96^3        1    3      0.5083      0.3903  wavefront    1.30x
+      32^3        8    1      0.3774      0.4894   diagonal    1.30x
+      32^3        8    2      0.6075      0.4326  wavefront    1.40x
+      32^3        8    4      0.8381      0.8254  wavefront    1.02x
+      32^3        8    6      0.9069       0.959   diagonal    1.06x
+
+note: sweep time is device-only (fenced vet_sweep* kernels); it hides the host plane-loop overhead of
+the wavefront traversal, biasing toward wavefront at small sizes (~12% at 32^3, ~1% at 128^3). A
+narrow small-size wavefront win may not survive host timing.

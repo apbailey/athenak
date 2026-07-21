@@ -23,6 +23,7 @@
 #include "parameter_input.hpp"
 #include "mesh/mesh.hpp"
 #include "bvals.hpp"
+#include "utils/perf.hpp"
 
 //----------------------------------------------------------------------------------------
 //! \fn  void MeshBoundaryValues::InitRecv
@@ -93,6 +94,7 @@ TaskStatus MeshBoundaryValues::ClearRecv() {
   auto &nghbr = pmy_pack->pmb->nghbr;
 
   // wait for all non-blocking receives for vars to finish before continuing
+  double t_cw = perf::CommWaitStart();  // exposed recv-wait (gated; no-op unless <perf>/comms)
   for (int m=0; m<nmb; ++m) {
     for (int n=0; n<nnghbr; ++n) {
       if ( (nghbr.h_view(m,n).gid >= 0) &&
@@ -102,6 +104,7 @@ TaskStatus MeshBoundaryValues::ClearRecv() {
       }
     }
   }
+  perf::CommWaitStop("recv_wait", t_cw);
   // Quit if MPI error detected
   if (!(no_errors)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
@@ -125,6 +128,7 @@ TaskStatus MeshBoundaryValues::ClearSend() {
   auto &nghbr = pmy_pack->pmb->nghbr;
 
   // wait for all non-blocking sends for vars to finish before continuing
+  double t_cw = perf::CommWaitStart();  // exposed send-wait (gated; no-op unless <perf>/comms)
   for (int m=0; m<nmb; ++m) {
     for (int n=0; n<nnghbr; ++n) {
       if ( (nghbr.h_view(m,n).gid >= 0) &&
@@ -134,6 +138,7 @@ TaskStatus MeshBoundaryValues::ClearSend() {
       }
     }
   }
+  perf::CommWaitStop("send_wait", t_cw);
   // Quit if MPI error detected
   if (!(no_errors)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__

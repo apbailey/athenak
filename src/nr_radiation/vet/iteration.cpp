@@ -22,6 +22,7 @@
 #include "eos/eos.hpp"
 #include "driver/driver.hpp"
 #include "nr_radiation/nr_radiation.hpp"
+#include "utils/perf.hpp"
 
 namespace nr_radiation {
 
@@ -581,6 +582,11 @@ TaskStatus VET::SolveTransfer(Driver *pdrive, int stage) {
     }
   }
 
+  // cells = active zones PER meshblock (nblocks passed separately -> total = cells*nblocks in
+  // analyze); with nang, cum_niter and the sweep kernel time this yields gcaups downstream.
+  auto &mbi = pmy_pack->pmesh->mb_indcs;
+  int cells_per_mb = mbi.nx1 * mbi.nx2 * mbi.nx3;
+  perf::EmitIteration(last_niter, last_max_rel, pmy_pack->pmesh->nmb_total, cells_per_mb, nang_tot);
   CalculateMoments();
   ComputeQrad();
   return TaskStatus::complete;

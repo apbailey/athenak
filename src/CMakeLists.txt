@@ -98,6 +98,7 @@ add_executable(
         outputs/eventlog.cpp
         outputs/formatted_table.cpp
         outputs/history.cpp
+        outputs/perf_output.cpp
         outputs/restart.cpp
         outputs/spherical_surface.cpp
         outputs/coarsened_binary.cpp
@@ -127,7 +128,6 @@ add_executable(
         pgen/tests/rad_linear_wave.cpp
         pgen/tests/vet_beam.cpp
         pgen/tests/vet_linwave.cpp
-        pgen/tests/vet_bench.cpp
         pgen/tests/vet_sphere.cpp
         pgen/tests/vet_twobeam.cpp
         pgen/tests/z4c_boosted_puncture.cpp
@@ -174,6 +174,7 @@ add_executable(
 
         units/units.cpp
         utils/change_rundir.cpp
+        utils/perf.cpp
         utils/derived_vars.cpp
         utils/show_config.cpp
         utils/lagrange_interpolator.cpp

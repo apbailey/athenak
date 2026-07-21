@@ -1,0 +1,5 @@
+# run outputs. The run SUMMARY (manifest.json + analysis.txt) IS committed -- config/provenance record
+# + the verdict; the bulky per-config raw perf files & nsys reports (raw/) and the CLI-one-off results/
+# tree stay ignored. (.gitignore has no trailing comments -- each pattern must be alone on its line.)
+raw/
+results/

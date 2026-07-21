@@ -43,11 +43,12 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
     derived_var("derived-var",1,1,1,1,1),
     outarray("cc_outvar",1,1,1,1,1),
     outfield("fc_outvar",1,1,1,1) {
-  // exit for history, restart, or event log files
+  // exit for history, restart, event log, tracked-particle, or perf files (no grid variable)
   if (out_params.file_type.compare("hst") == 0 ||
       out_params.file_type.compare("rst") == 0 ||
       out_params.file_type.compare("log") == 0 ||
-      out_params.file_type.compare("trk") == 0) {return;}
+      out_params.file_type.compare("trk") == 0 ||
+      out_params.file_type.compare("perf") == 0) {return;}
 
   // initialize vector containing number of output MBs per rank
   noutmbs.assign(global_variable::nranks, 0);

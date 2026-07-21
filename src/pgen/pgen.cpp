@@ -920,8 +920,6 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     VETBeam(pin, is_restart);
   } else if (pgen_fun_name.compare("vet_linwave") == 0) {
     VETLinwave(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_bench") == 0) {
-    VETBench(pin, is_restart);
   } else if (pgen_fun_name.compare("vet_sphere") == 0) {
     VETSphere(pin, is_restart);
   } else if (pgen_fun_name.compare("vet_twobeam") == 0) {

@@ -92,7 +92,8 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
       if (opar.file_type.compare("hst") != 0 &&
           opar.file_type.compare("rst") != 0 &&
           opar.file_type.compare("log") != 0 &&
-          opar.file_type.compare("trk") != 0) {
+          opar.file_type.compare("trk") != 0 &&
+          opar.file_type.compare("perf") != 0) {
         opar.variable = pin->GetString(opar.block_name, "variable");
         opar.file_id = pin->GetOrAddString(opar.block_name,"id",opar.variable);
       }
@@ -182,7 +183,8 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
       // set output variable and optional file id (default is output variable name)
       if (opar.file_type.compare("hst") != 0 &&
           opar.file_type.compare("rst") != 0 &&
-          opar.file_type.compare("log") != 0) {
+          opar.file_type.compare("log") != 0 &&
+          opar.file_type.compare("perf") != 0) {
         opar.variable = pin->GetString(opar.block_name, "variable");
         opar.file_id = pin->GetOrAddString(opar.block_name,"id",opar.variable);
       }
@@ -281,6 +283,10 @@ Outputs::Outputs(ParameterInput *pin, Mesh *pm) {
         pout_list.insert(pout_list.begin(),pnode);
       } else if (opar.file_type.compare("sph") == 0) {
         pnode = new SphericalSurfaceOutput(pin,pm,opar);
+        pout_list.insert(pout_list.begin(),pnode);
+      } else if (opar.file_type.compare("perf") == 0) {
+        opar.perf_probe = pin->GetOrAddString(opar.block_name,"perf_probe","");
+        pnode = new PerfOutput(pin,pm,opar);
         pout_list.insert(pout_list.begin(),pnode);
       } else if (opar.file_type.compare("rst") == 0) {
       // Add restarts to the tail end of BaseTypeOutput list, so file counters for other
