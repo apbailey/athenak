@@ -1,0 +1,58 @@
+<comment>
+problem = nr_radiation VET homogeneous emitting/absorbing sphere (Davis+ 2012)
+
+# Uniform sphere (radius R, absorption chi, source S=b) in vacuum, centered in the domain.
+# One FormalSolution sweep on a single meshblock is the exact formal solution (fixed S=bb).
+# The pgen compares the numeric mean intensity J(r) to the analytic angular quadrature of
+# I = b[1-exp(-chi*s)] over interior cells (r < r_mask*R) and writes the relative L2/L-infty
+# errors to <basename>-errs.dat. The pytest wrapper runs a resolution ladder (overriding the
+# nx below) and checks the error converges; tol here is only a loose NaN/blow-up crash-guard.
+
+<job>
+basename = vet_sphere
+
+<mesh>
+nghost = 2
+nx1    = 32
+x1min  = -1.0
+x1max  =  1.0
+ix1_bc = outflow
+ox1_bc = outflow
+nx2    = 32
+x2min  = -1.0
+x2max  =  1.0
+ix2_bc = outflow
+ox2_bc = outflow
+nx3    = 32
+x3min  = -1.0
+x3max  =  1.0
+ix3_bc = outflow
+ox3_bc = outflow
+
+<meshblock>
+nx1 = 32
+nx2 = 32
+nx3 = 32
+
+<time>
+evolution  = static
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0
+tlim       = 0.0
+
+<nr_radiation>
+nmu          = 3
+opa          = 1.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+
+<problem>
+pgen_name = vet_sphere
+radius = 0.6
+chi    = 5.0
+source = 1.0
+r_mask = 0.6
+tol    = 1.0e-1

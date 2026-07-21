@@ -73,6 +73,8 @@ class ProblemGenerator {
   void VETBeam(ParameterInput *pin, const bool restart);
   void VETLinwave(ParameterInput *pin, const bool restart);
   void VETBench(ParameterInput *pin, const bool restart);
+  void VETSphere(ParameterInput *pin, const bool restart);
+  void VETTwoBeam(ParameterInput *pin, const bool restart);
   void Z4cBoostedPuncture(ParameterInput *pin, const bool restart);
   void Z4cLinearWave(ParameterInput *pin, const bool restart);
 

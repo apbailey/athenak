@@ -922,6 +922,10 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     VETLinwave(pin, is_restart);
   } else if (pgen_fun_name.compare("vet_bench") == 0) {
     VETBench(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_sphere") == 0) {
+    VETSphere(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_twobeam") == 0) {
+    VETTwoBeam(pin, is_restart);
   } else if (pgen_fun_name.compare("shock_tube") == 0) {
     ShockTube(pin, is_restart);
   } else if (pgen_fun_name.compare("shwave") == 0) {

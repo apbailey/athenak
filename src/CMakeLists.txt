@@ -128,6 +128,8 @@ add_executable(
         pgen/tests/vet_beam.cpp
         pgen/tests/vet_linwave.cpp
         pgen/tests/vet_bench.cpp
+        pgen/tests/vet_sphere.cpp
+        pgen/tests/vet_twobeam.cpp
         pgen/tests/z4c_boosted_puncture.cpp
         pgen/tests/z4c_linear_wave.cpp
 

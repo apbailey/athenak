@@ -7,6 +7,7 @@ Various utility functions used for automatic testing, including
 
 # Modules
 import os
+import shlex
 from subprocess import Popen, PIPE
 from typing import List
 import time
@@ -21,7 +22,16 @@ athena_read.check_nan_flag = True  # Enable NaN checking in athena_read
 
 # Constants and configurations
 ATHENAK_PATH = ".."
-ATHENAK_BUILD = "build/src"
+# Build directory holding the `athena` binary. Overridable via the environment so
+# the SAME test code can target a prebuilt binary elsewhere (e.g. an arch-specific
+# cluster build) with no edits and no rebuild:
+#     export ATHENAK_BUILD=/home/u21/averybailey/athenak/build_p100/src   (absolute ok)
+ATHENAK_BUILD = os.environ.get("ATHENAK_BUILD", "build/src")
+
+# How to launch the binary is orthogonal to where it lives, so it is its own knob.
+# Empty (the default) runs the binary directly (serial / single GPU); on a cluster:
+#     export ATHENAK_LAUNCHER="mpirun -np 1"        # or "srun --mpi=pmix"
+DEFAULT_LAUNCHER = shlex.split(os.environ.get("ATHENAK_LAUNCHER", ""))
 
 # Configure logging
 LOG_FILE_PATH = os.path.abspath(os.path.join(ATHENAK_PATH, "tst", "test_log.txt"))
@@ -130,11 +140,16 @@ def run(inputfile: str, flags=None, **kwargs) -> bool:
 
     Raises:
         AssertionError: If the test case execution fails.
+
+    Note:
+        Prepends $ATHENAK_LAUNCHER (empty by default) so a cluster whose MPI build
+        cannot run bare (e.g. OpenMPI that refuses MPI_Init without a launcher) can
+        set e.g. ATHENAK_LAUNCHER="mpirun -np 1" without editing test code.
     """
     if flags is None:
         flags = []
 
-    command = ["./athena", "-i", inputfile] + flags
+    command = list(DEFAULT_LAUNCHER) + ["./athena", "-i", inputfile] + flags
     if not run_command(command, **kwargs):
         logging.error(f"Failed to execute {inputfile} with flags {flags}")
         raise RuntimeError(f"Failed to execute {inputfile} with flags {flags}")
@@ -175,6 +190,84 @@ def mpi_run(
             f"and {threads}-threads"
         )
     return True
+
+
+def run_command_capture(command: List[str], cwd: str = None):
+    """
+    Executes a shell command and RETURNS its output (unlike run_command, which
+    only logs the output and returns a success bool).
+
+    stdout/stderr are still appended to the shared log file for debugging, but
+    are also returned so a caller can parse them (e.g. a throughput number that
+    the binary prints to stdout).
+
+    Args:
+        command (list): The command to execute as a list of strings.
+        cwd (str): Directory to run the command in (default: current directory).
+
+    Returns:
+        tuple: (returncode: int, stdout: str, stderr: str).
+    """
+    logging.info(f"Executing (capture): {' '.join(command)}")
+    process = Popen(command, stdout=PIPE, stderr=PIPE, text=True, cwd=cwd)
+    output, errors = process.communicate()
+    # Log with a delimiter so per-run output is distinguishable in the shared log.
+    with open(LOG_FILE_PATH, "a") as log_file:
+        log_file.write(f"\n$ {' '.join(command)}\n")
+        log_file.write(output)
+        log_file.write(errors)
+    if process.returncode != 0:
+        logging.error(f"Command failed with return code {process.returncode}")
+    return process.returncode, output, errors
+
+
+def run_capture(
+    inputfile: str,
+    flags=None,
+    *,
+    launcher=None,
+    cwd: str = None,
+    check: bool = True,
+) -> str:
+    """
+    Runs the AthenaK binary and RETURNS its captured stdout, so a test can parse
+    printed values (throughput, timings, etc.). Mirrors run(), but returns output
+    instead of a bool.
+
+    The binary is `./athena` run from the build directory (ATHENAK_BUILD), the same
+    convention run()/make() use; set the env var ATHENAK_BUILD to target a prebuilt
+    binary elsewhere (e.g. an arch-specific cluster build).
+
+    Args:
+        inputfile (str): Path to the athinput file (relative to the run cwd).
+        flags (list): Extra CLI overrides, e.g. ["mesh/nx1=64", "nr_radiation/sweep=diagonal"].
+        launcher (list): Launch prefix, e.g. ["mpirun", "-np", "1"] or
+            ["srun", "--mpi=pmix"]. Defaults to $ATHENAK_LAUNCHER (space-split) or none.
+        cwd (str): Directory to run in. Defaults to ATHENAK_BUILD (where ./athena lives).
+        check (bool): If True (default), raise RuntimeError on nonzero exit.
+
+    Returns:
+        str: Captured stdout.
+
+    Raises:
+        RuntimeError: If check is True and the run exits nonzero.
+    """
+    if flags is None:
+        flags = []
+    if launcher is None:
+        launcher = DEFAULT_LAUNCHER
+    if cwd is None:
+        cwd = ATHENAK_BUILD
+
+    command = list(launcher) + ["./athena", "-i", inputfile] + list(flags)
+    returncode, output, errors = run_command_capture(command, cwd=cwd)
+    if check and returncode != 0:
+        logging.error(f"Failed to execute {inputfile} with flags {flags}")
+        raise RuntimeError(
+            f"Run failed (exit {returncode}) for {inputfile} with flags {flags}\n"
+            f"--- stderr ---\n{errors}"
+        )
+    return output
 
 
 def cleanup(text=False) -> None:
