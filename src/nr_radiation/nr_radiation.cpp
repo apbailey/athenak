@@ -105,12 +105,18 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   // Activate Jacobi-ALI when scattering is present
   use_ali = (ops > 0.0) || (use_eps_uniform && eps_uniform < 1.0);
 
-  // Unordered jacobi sweep races on upwind I — not safe for ALI accuracy claims
+  // Unordered jacobi sweep races on upwind I — not safe for ALI accuracy claims.
+  // Opt-in bypass (nr_radiation/allow_jacobi_ali=true) for experiments.
   if (use_ali && sweep_method == "jacobi") {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "<nr_radiation>/sweep = 'jacobi' is incompatible with ALI "
-      << "(eps < 1 or ops > 0); use 'wavefront' or 'diagonal'" << std::endl;
-    std::exit(EXIT_FAILURE);
+    if (pin->GetOrAddBoolean("nr_radiation", "allow_jacobi_ali", false)) {
+      std::cout << "### WARNING: jacobi+ALI enabled (experimental, unordered sweep)"
+                << std::endl;
+    } else {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "<nr_radiation>/sweep = 'jacobi' is incompatible with ALI "
+        << "(eps < 1 or ops > 0); use 'wavefront' or 'diagonal'" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
   }
 
   // Frequency scaffold (gray default)
