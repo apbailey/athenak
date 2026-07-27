@@ -170,7 +170,10 @@ def run_experiment(name, deck, configs, probes, cadence, kfilter, bench_dir, rer
         print(f"[{i + 1}/{len(configs)}] {label}  "
               + "  ".join(f"{k}={v}" for k, v in params.items()))
         try:
-            testutils.run_capture(os.path.abspath(deckpath), overrides)  # binary writes perf.* here
+            # binary writes perf.* here; also save its stdout (holds "cpu time used = ..." wall time)
+            out = testutils.run_capture(os.path.abspath(deckpath), overrides)
+            with open(os.path.join(sub, "run.log"), "w") as lf:
+                lf.write(out)
         except Exception:
             # one bad config (e.g. a self-checking test pgen that aborts) shouldn't lose the others
             print(f"  !! '{label}' failed to run -- skipping (rerun: athena -i {deckpath})")
