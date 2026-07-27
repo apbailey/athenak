@@ -15,6 +15,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <fstream>
+#include <vector>
+#include <array>
+#include <algorithm>
 
 #include "athena.hpp"
 #include "parameter_input.hpp"
@@ -29,7 +33,23 @@ namespace {
 struct AtmParams {
   Real chi0, B0, eps0, tol;
   bool require_analytic;
+  bool exp_profile;   // false: uniform chi (finite slab); true: chi ~ exp(depth/H)
+  Real H;             // scale height for the exponential (Davis 2012 Fig. 4) atmosphere
 };
+
+// chi(x) and cumulative optical depth tau(x) measured from the surface at x1min.
+//   uniform:     chi = chi0,                        tau = chi0*(x-x1min)
+//   exponential: chi = chi0*exp((x-x1min)/H),       tau = chi0*H*(exp((x-x1min)/H)-1)
+KOKKOS_INLINE_FUNCTION
+Real ChiOfX(bool exp_profile, Real chi0, Real H, Real x, Real x1min) {
+  if (exp_profile) return chi0 * Kokkos::exp((x - x1min) / H);
+  return chi0;
+}
+KOKKOS_INLINE_FUNCTION
+Real TauOfX(bool exp_profile, Real chi0, Real H, Real x, Real x1min) {
+  if (exp_profile) return chi0 * H * (Kokkos::exp((x - x1min) / H) - 1.0);
+  return chi0 * (x - x1min);
+}
 
 void ReportAtmosphere(Mesh *pm, nr_radiation::VET *pvet, const AtmParams &ap,
                       int niter, Real max_rel, bool converged) {
@@ -54,8 +74,11 @@ void ReportAtmosphere(Mesh *pm, nr_radiation::VET *pvet, const AtmParams &ap,
   const Real kth = std::sqrt(3.0 * ap.eps0);
   Real x1min_g = pm->mesh_size.x1min;
   Real x1max_g = pm->mesh_size.x1max;
-  Real tau_max = ap.chi0 * (x1max_g - x1min_g);
+  Real tau_max = TauOfX(ap.exp_profile, ap.chi0, ap.H, x1max_g, x1min_g);
   Real skip_deep = 2.0 / std::max(sqrt_eps, 1.0e-3);
+  // surface (min-tau active cell) source function, and a full S/B(tau) profile dump
+  Real surf_tau = 1.0e300, surf_SB = 0.0;
+  std::vector<std::array<Real,4>> prof;  // (tau, J/B, S/B, San/B)
 
   for (int m = 0; m <= nmb1; ++m) {
     Real x1min = size.h_view(m).x1min;
@@ -65,14 +88,18 @@ void ReportAtmosphere(Mesh *pm, nr_radiation::VET *pvet, const AtmParams &ap,
     for (int j = js; j <= je; ++j)
     for (int i = is; i <= ie; ++i) {
       Real x = CellCenterX(i - is, indcs.nx1, x1min, x1max);
-      Real tau = ap.chi0 * (x - x1min_g);
+      Real tau = TauOfX(ap.exp_profile, ap.chi0, ap.H, x, x1min_g);
       Real J_num = jmean_h(m, k, j, i);
       Real S_num = bb_h(m, 0, k, j, i);
       sumJ_dx += J_num * dx1;
 
-      if (tau < 0.5 || tau > tau_max - skip_deep) continue;
+      // analytic (Eddington semi-infinite scattering atmosphere): S/B -> sqrt(eps) surface
       Real J_an = ap.B0 * (1.0 - std::exp(-kth * tau) / (1.0 + sqrt_eps));
       Real S_an = ap.eps0 * ap.B0 + (1.0 - ap.eps0) * J_an;
+      if (tau > 0.0) prof.push_back({tau, J_num/ap.B0, S_num/ap.B0, S_an/ap.B0});
+      if (tau > 0.0 && tau < surf_tau) { surf_tau = tau; surf_SB = S_num/ap.B0; }
+
+      if (tau < 0.5 || tau > tau_max - skip_deep) continue;
       Real errJ = std::fabs(J_num - J_an) / ap.B0;
       Real errS = std::fabs(S_num - S_an) / ap.B0;
       max_err_J = std::max(max_err_J, errJ);
@@ -97,6 +124,18 @@ void ReportAtmosphere(Mesh *pm, nr_radiation::VET *pvet, const AtmParams &ap,
             << " (npts=" << npts << ")" << std::endl;
   std::cout << "  note: Eq. 30 is Eddington analytic; DO SC error is characterization"
             << std::endl;
+  // surface sqrt(eps) thermalization law + full S/B(tau) profile dump
+  std::cout << "  surface: tau=" << surf_tau << " S/B=" << surf_SB
+            << " sqrt(eps)=" << sqrt_eps
+            << " ratio(S/B)/sqrt(eps)=" << (sqrt_eps > 0.0 ? surf_SB/sqrt_eps : 0.0)
+            << std::endl;
+  {
+    std::sort(prof.begin(), prof.end(),
+      [](const std::array<Real,4>&a, const std::array<Real,4>&b){ return a[0] < b[0]; });
+    std::ofstream f("vet_atm_profile.dat");
+    f << "# tau  J/B  S/B  San/B   eps=" << ap.eps0 << "\n";
+    for (auto &r : prof) f << r[0] << " " << r[1] << " " << r[2] << " " << r[3] << "\n";
+  }
 
   if (!converged) {
     std::cout << "### VET atmosphere FAILED: ALI did not converge (max|dS/S|="
@@ -156,6 +195,8 @@ void ProblemGenerator::VETAtmosphere(ParameterInput *pin, const bool restart) {
   g_atm.eps0 = pin->GetReal("nr_radiation", "eps");
   g_atm.tol  = pin->GetOrAddReal("problem", "tol", 5.0e-2);
   g_atm.require_analytic = pin->GetOrAddBoolean("problem", "require_analytic", true);
+  g_atm.exp_profile = (pin->GetOrAddString("problem", "profile", "uniform") == "exponential");
+  g_atm.H = pin->GetOrAddReal("problem", "scale_height", 1.0);
   g_use_st = pin->GetOrAddBoolean("problem", "use_solve_transfer", false);
   const int maxit = pin->GetOrAddInteger("problem", "max_ali_iters", 5000);
 
@@ -167,10 +208,16 @@ void ProblemGenerator::VETAtmosphere(ParameterInput *pin, const bool restart) {
   const Real chi0 = g_atm.chi0;
   const Real B0 = g_atm.B0;
   const Real eps0 = g_atm.eps0;
+  const bool exp_p = g_atm.exp_profile;
+  const Real Hsc = g_atm.H;
+  const Real x1min_g = pmy_mesh_->mesh_size.x1min;
+  const int is_l = indcs.is;
+  auto &size = pmbp->pmb->mb_size;
 
   par_for("vet_atm_setup", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    chi_a(m,k,j,i) = chi0;
+    Real x = size.d_view(m).x1min + (i - is_l + 0.5) * size.d_view(m).dx1;
+    chi_a(m,k,j,i) = ChiOfX(exp_p, chi0, Hsc, x, x1min_g);
     pl_a(m,k,j,i)  = B0;
     bb_a(m,0,k,j,i)  = B0;   // cold start S=B
     eps_a(m,k,j,i) = eps0;
