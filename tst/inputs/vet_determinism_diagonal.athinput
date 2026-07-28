@@ -1,0 +1,62 @@
+<comment>
+problem  = VET sweep determinism / race probe (generic pgen; sweep chosen in <nr_radiation>)
+# The pgen freezes an input-controlled gradient field and sweeps it `nrepeat` times from the
+# SAME input, requiring bitwise-identical output (XOR-hash). The single-buffer jacobi sweep
+# reads a neighbour another thread is overwriting -> non-deterministic on GPU -> FAIL; the
+# double-buffered sweep (and wavefront/diagonal) are reproducible -> PASS.
+# Variants: copy this file and change ONLY `sweep = wavefront|diagonal` (both must PASS).
+# The race is only observable with a gradient (amp > 0); amp = 0 is a trivial uniform pass.
+
+<job>
+basename = ut_vet_determinism_diagonal
+
+<mesh>
+nghost = 2
+nx1    = 64
+x1min  = 0.0
+x1max  = 1.0
+ix1_bc = periodic
+ox1_bc = periodic
+nx2    = 64
+x2min  = 0.0
+x2max  = 1.0
+ix2_bc = periodic
+ox2_bc = periodic
+nx3    = 64
+x3min  = 0.0
+x3max  = 1.0
+ix3_bc = periodic
+ox3_bc = periodic
+
+<meshblock>
+nx1 = 64
+nx2 = 64
+nx3 = 64          # one large block -> maximal intra-kernel concurrency for the race to fire
+
+<time>
+evolution  = static
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0    # no driver cycles; the pgen runs the determinism loop itself
+tlim       = 0.0
+
+<nr_radiation>
+nmu          = 3        # nang_tot = 48 (3D Carlson) -> ~12.6M sweep threads at 64^3
+opa          = 0.5      # nonzero so edtau<1 and the upwind intensity actually contributes
+ops          = 0.0      # ops=0 & eps=1 -> use_ali=false: pure-transport probe (Lambda* is race-free anyway)
+eps          = 1.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = diagonal       # sanity: ordered sweep must be deterministic
+iter_max     = 1
+itermin      = 1
+
+<problem>
+pgen_name = vet_sweep_determinism
+chi0      = 0.5         # uniform opacity set by the pgen (overrides opa for the field)
+ir_bg     = 1.0         # background intensity / source level
+amp       = 1.0         # gradient amplitude (0 => uniform => trivial pass; >0 => race observable)
+axis      = 1           # gradient axis (1/2/3)
+rough     = true        # deterministic hash field (non-smooth, stronger race stressor) vs smooth ramp
+nrepeat   = 32          # relaunches from the frozen input; all outputs must hash-match

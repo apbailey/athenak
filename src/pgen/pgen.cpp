@@ -946,6 +946,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     VETMoments(pin, is_restart);
   } else if (pgen_fun_name.compare("vet_atmosphere") == 0) {
     VETAtmosphere(pin, is_restart);
+  } else if (pgen_fun_name.compare("vet_sweep_determinism") == 0) {
+    VETSweepDeterminism(pin, is_restart);
 
   } else {
     // name not set on command line or input file, print warning and quit
