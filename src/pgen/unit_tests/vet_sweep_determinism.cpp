@@ -123,6 +123,8 @@ void ProblemGenerator::VETSweepDeterminism(ParameterInput *pin, const bool resta
 
   // ---- K relaunches from the frozen input; every output must hash-match the first ----
   std::uint64_t href = 0;
+  int bad_rep = -1;
+  std::uint64_t bad_hash = 0;
   for (int rep = 0; rep < K; ++rep) {
     Kokkos::deep_copy(pvet->ir, ir0);     // reset the field the sweep reads (fixed input)
     pvet->FormalSolution();               // dispatches on nr_radiation/sweep
@@ -131,18 +133,25 @@ void ProblemGenerator::VETSweepDeterminism(ParameterInput *pin, const bool resta
     if (rep == 0) {
       href = h;
     } else if (h != href) {
-      if (global_variable::my_rank == 0) {
-        std::printf("### FATAL ERROR: VET %s sweep NON-DETERMINISTIC (race): "
-                    "rep %d hash 0x%016llx != ref 0x%016llx\n",
-                    pvet->sweep_method.c_str(), rep,
-                    static_cast<unsigned long long>(h),
-                    static_cast<unsigned long long>(href));
-      }
-      std::exit(EXIT_FAILURE);
+      bad_rep = rep; bad_hash = h;
+      break;
     }
   }
+
+  // Report the verdict on stdout and return NORMALLY (exit 0). We deliberately do NOT
+  // std::exit() on a mismatch: under Kokkos+MPI that skips Kokkos::finalize() and makes
+  // mpirun abort the job, which leaves the GPU context unclean and can poison the next test.
+  // The pytest wrapper decides pass/fail by grepping the "determinism PASS" line, so a
+  // failing sweep is non-destructive and the harness continues to the next test.
   if (global_variable::my_rank == 0) {
-    std::printf("VET %s sweep determinism PASS: %d identical launches (hash 0x%016llx)\n",
-                pvet->sweep_method.c_str(), K, static_cast<unsigned long long>(href));
+    if (bad_rep < 0) {
+      std::printf("VET %s sweep determinism PASS: %d identical launches (hash 0x%016llx)\n",
+                  pvet->sweep_method.c_str(), K, static_cast<unsigned long long>(href));
+    } else {
+      std::printf("VET %s sweep determinism FAIL (race): rep %d hash 0x%016llx != ref "
+                  "0x%016llx  [%d relaunches]\n", pvet->sweep_method.c_str(), bad_rep,
+                  static_cast<unsigned long long>(bad_hash),
+                  static_cast<unsigned long long>(href), K);
+    }
   }
 }
