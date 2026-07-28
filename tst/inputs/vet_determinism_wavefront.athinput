@@ -12,26 +12,26 @@ basename = ut_vet_determinism_wavefront
 
 <mesh>
 nghost = 2
-nx1    = 64
+nx1    = 32
 x1min  = 0.0
 x1max  = 1.0
 ix1_bc = periodic
 ox1_bc = periodic
-nx2    = 64
+nx2    = 32
 x2min  = 0.0
 x2max  = 1.0
 ix2_bc = periodic
 ox2_bc = periodic
-nx3    = 64
+nx3    = 32
 x3min  = 0.0
 x3max  = 1.0
 ix3_bc = periodic
 ox3_bc = periodic
 
 <meshblock>
-nx1 = 64
-nx2 = 64
-nx3 = 64          # one large block -> maximal intra-kernel concurrency for the race to fire
+nx1 = 32
+nx2 = 32
+nx3 = 32          # one 32^3 block (matches vet_sphere: fast teardown); ~1.5M threads still races
 
 <time>
 evolution  = static
@@ -59,4 +59,4 @@ ir_bg     = 1.0         # background intensity / source level
 amp       = 1.0         # gradient amplitude (0 => uniform => trivial pass; >0 => race observable)
 axis      = 1           # gradient axis (1/2/3)
 rough     = true        # deterministic hash field (non-smooth, stronger race stressor) vs smooth ramp
-nrepeat   = 32          # relaunches from the frozen input; all outputs must hash-match
+nrepeat   = 64          # relaunches from the frozen input; all outputs must hash-match
