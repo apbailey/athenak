@@ -41,24 +41,30 @@ std::uint64_t MixBits(double v, std::uint64_t pos) {
   return x;
 }
 
-// Interior-only bitwise hash of pvet->ir via atomic-XOR fold into a device scalar. XOR is
-// commutative so the atomic is order-independent (Kokkos has no BXor reducer); hashing the
-// interior only avoids ghost / scratch-buffer noise from the jacobi ping-pong swap. Kept as a
-// free function (not a lambda-in-lambda) so the enclosing KOKKOS_LAMBDA compiles under nvcc.
+// Interior-only bitwise hash of pvet->ir, folded on the HOST. A device atomic-XOR into a single
+// scalar would serialize ~1e6 threads onto one address (measured ~20 s/call on a P100 --
+// pathological contention); copying ir down (~15 MB) and XOR-folding serially is a few ms. XOR is
+// commutative so the result is identical and order-independent, and hashing the interior only
+// avoids ghost / scratch-buffer noise from the jacobi ping-pong swap.
 std::uint64_t InteriorHash(nr_radiation::VET *pvet, int nmb1, int nangt1,
                            int ks, int ke, int js, int je, int is, int ie,
                            int nat, int N1, int N2, int N3) {
-  Kokkos::View<std::uint64_t, DevMemSpace> hv("det_hash");
-  Kokkos::deep_copy(hv, static_cast<std::uint64_t>(0));
-  auto d = pvet->ir;
-  par_for("det_hash", DevExeSpace(), 0, nmb1, 0, nangt1, ks, ke, js, je, is, ie,
-  KOKKOS_LAMBDA(int m, int ang, int k, int j, int i) {
-    std::uint64_t p = ((((static_cast<std::uint64_t>(m)*nat + ang)*N3 + k)*N2 + j)*N1 + i);
-    Kokkos::atomic_fetch_xor(&hv(), MixBits(d(m,ang,k,j,i), p));
-  });
-  auto hv_h = Kokkos::create_mirror_view(hv);
-  Kokkos::deep_copy(hv_h, hv);
-  return hv_h();
+  auto ir_h = Kokkos::create_mirror_view(pvet->ir);
+  Kokkos::deep_copy(ir_h, pvet->ir);
+  std::uint64_t h = 0;
+  for (int m = 0; m <= nmb1; ++m) {
+    for (int ang = 0; ang <= nangt1; ++ang) {
+      for (int k = ks; k <= ke; ++k) {
+        for (int j = js; j <= je; ++j) {
+          for (int i = is; i <= ie; ++i) {
+            std::uint64_t p = ((((static_cast<std::uint64_t>(m)*nat + ang)*N3 + k)*N2 + j)*N1 + i);
+            h ^= MixBits(ir_h(m,ang,k,j,i), p);
+          }
+        }
+      }
+    }
+  }
+  return h;
 }
 }  // namespace
 
