@@ -89,6 +89,9 @@ class VET {
   // intensity array: (nmb, nang_tot, nx3, nx2, nx1) with ghost zones, persistent
   DvceArray5D<Real> ir;
   DvceArray5D<Real> coarse_ir;
+  DvceArray5D<Real> ir_prev;   // sweep=jacobi ping-pong buffer (previous-sweep field); other
+                               // sweeps leave it unallocated. Removes the read-write race that an
+                               // unordered jacobi par_for would otherwise have on `ir`.
 
   // source iterate S: (nmb, 1, nx3, nx2, nx1) — nvar=1 for PackAndSendCC
   DvceArray5D<Real> bb;
