@@ -139,6 +139,7 @@ add_executable(
         pgen/unit_tests/vet_attenuation.cpp
         pgen/unit_tests/vet_moments.cpp
         pgen/unit_tests/vet_atmosphere.cpp
+        pgen/unit_tests/vet_sweep_determinism.cpp
 
         radiation/radiation.cpp
         radiation/radiation_fluxes.cpp
