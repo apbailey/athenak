@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>   // std::swap
 
 #include "athena.hpp"
 #include "mesh/mesh.hpp"
@@ -251,6 +252,20 @@ void VET::FormalSolutionDiagonal() {
 //! \fn void VET::FormalSolutionJacobi
 
 void VET::FormalSolutionJacobi() {
+  // Ping-pong double buffer. The jacobi sweep is an unordered par_for, so reading the upwind
+  // intensity from the same `ir` that a sibling thread is writing would be a read-write DATA RACE.
+  // Instead we read the previous sweep's field from `ir_prev` and write the new field into `ir`.
+  // Swapping the two View handles up front is O(1) (no copy): it moves the bvals-filled previous
+  // field into the read slot and leaves `ir` — the buffer every downstream consumer reads
+  // (bvals/ComputeJ/output) — as the write target, matching wavefront/diagonal. `ir_prev` is
+  // lazily allocated on first use; no seed copy is needed because the par_for overwrites the whole
+  // interior every sweep and ghost zones are refilled by the next bvals exchange.
+  if (ir_prev.size() == 0) {
+    Kokkos::realloc(ir_prev, ir.extent_int(0), ir.extent_int(1),
+                    ir.extent_int(2), ir.extent_int(3), ir.extent_int(4));
+  }
+  std::swap(ir, ir_prev);
+
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
@@ -262,7 +277,8 @@ void VET::FormalSolutionJacobi() {
   auto &mu = pang->mu;
   auto &wmu = pang->wmu;
   auto &mbsize = pmy_pack->pmb->mb_size;
-  auto ir_ = ir;
+  auto ir_src = ir_prev;   // READ upwind intensity from the previous sweep's field
+  auto ir_dst = ir;        // WRITE new field into ir (same target as wavefront/diagonal)
   auto chi_ = chi;
   auto bb_ = bb;
   auto lam_ = lamstr;
@@ -282,11 +298,11 @@ void VET::FormalSolutionJacobi() {
     Real dx2v = mbsize.d_view(m).dx2;
     Real dx3v = mbsize.d_view(m).dx3;
     Real a1 = 0.0;
-    Real I = UpdateCellSC(chi_,bb_,ir_,m,angg,
+    Real I = UpdateCellSC(chi_,bb_,ir_src,m,angg,
                           i,j,k, sx,sy,sz,
                           mux,muy,muz,
                           dx1v,dx2v,dx3v, ndim,ks,js, &a1);
-    ir_(m,angg,k,j,i) = I;
+    ir_dst(m,angg,k,j,i) = I;
     if (accumulate) {
       Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
     }
