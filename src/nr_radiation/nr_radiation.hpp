@@ -6,14 +6,14 @@
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
 //! \file nr_radiation.hpp
-//! \brief definitions for the VET class: short-characteristics radiation solver following
+//! \brief definitions for the SC class: short-characteristics radiation solver following
 //! Davis, Stone & Jiang (2012). Supports LTE (ε=1) boundary-lag iteration and Jacobi-ALI
-//! scattering (Eq. 22–25). SMR/AMR via CC Restrict/Prolong of ir and bb (source S).
+//! scattering (Eq. 22–25). SMR/AMR via CC Restrict/Prolong of ir and srad (source S).
 //!
 //! Opacity/coupling:
 //!   chi = (opa + ops) * rho     total extinction
 //!   eps = opa / (opa + ops)     (or uniform override)
-//!   B   = T^4                   (planck); S iterate in bb
+//!   B   = T^4                   (planck); S iterate in srad
 //!   Q   = eps * chi * crat * prat * (J - B)
 
 #include <map>
@@ -32,28 +32,28 @@ class Driver;
 namespace nr_radiation {
 
 //----------------------------------------------------------------------------------------
-//! \struct VETTaskIDs
+//! \struct SCTaskIDs
 //! \brief container to hold TaskIDs of all nr_radiation tasks
 
-struct VETTaskIDs {
-  TaskID vet_solve;  // formal solution + iteration + moments + Q_rad
-  TaskID vet_qrad;   // apply Q_rad onto hydro/mhd conserved energy for this stage
-  TaskID vet_newdt;  // radiation-relaxation timestep (stagen, after hydro/mhd newdt)
-  // boundary-exchange tasks for the "vet_bvals" task list (driven by ExecuteTaskList)
+struct SCTaskIDs {
+  TaskID sc_solve;  // formal solution + iteration + moments + Q_rad
+  TaskID sc_qrad;   // apply Q_rad onto hydro/mhd conserved energy for this stage
+  TaskID sc_newdt;  // radiation-relaxation timestep (stagen, after hydro/mhd newdt)
+  // boundary-exchange tasks for the "sc_bvals" task list (driven by ExecuteTaskList)
   TaskID ir_irecv, ir_rest, ir_send, ir_recv, ir_bcs, ir_prol, ir_csend, ir_crecv;
-  TaskID bb_irecv, bb_rest, bb_send, bb_recv, bb_bcs, bb_prol, bb_csend, bb_crecv;
+  TaskID srad_irecv, srad_rest, srad_send, srad_recv, srad_bcs, srad_prol, srad_csend, srad_crecv;
 };
 
 //----------------------------------------------------------------------------------------
-//! \class VET
+//! \class SC
 
-class VET {
+class SC {
  public:
-  VET(MeshBlockPack *ppack, ParameterInput *pin);
-  ~VET();
+  SC(MeshBlockPack *ppack, ParameterInput *pin);
+  ~SC();
 
   // angular quadrature (Bruls et al. 1999 type-A grid)
-  VETAngularGrid *pang = nullptr;
+  SCAngularGrid *pang = nullptr;
   int nang_tot;  // = noct*nang, total number of discrete rays
 
   // opacity/coupling parameters
@@ -94,8 +94,8 @@ class VET {
                                // unordered jacobi par_for would otherwise have on `ir`.
 
   // source iterate S: (nmb, 1, nx3, nx2, nx1) — nvar=1 for PackAndSendCC
-  DvceArray5D<Real> bb;
-  DvceArray5D<Real> coarse_bb;
+  DvceArray5D<Real> srad;
+  DvceArray5D<Real> coarse_srad;
 
   // per-zone radiation quantities (nmb,nx3,nx2,nx1)
   DvceArray4D<Real> chi;     // total opacity χ = (opa+ops)*ρ
@@ -115,19 +115,19 @@ class VET {
   // radiation moments: n=0:J, 1-3:H_1,H_2,H_3, 4-9:K_11,K_22,K_33,K_12,K_13,K_23
   DvceArray5D<Real> moments;
 
-  // boundary communication: separate MeshBoundaryValuesCC for ir and bb
+  // boundary communication: separate MeshBoundaryValuesCC for ir and srad
   MeshBoundaryValuesCC *pbval_ir = nullptr;
-  MeshBoundaryValuesCC *pbval_bb = nullptr;
+  MeshBoundaryValuesCC *pbval_srad = nullptr;
 
   Real dtnew;
 
-  VETTaskIDs id;
+  SCTaskIDs id;
 
   void AssembleTasks(std::map<std::string, std::shared_ptr<TaskList>> tl);
   TaskStatus SolveTransfer(Driver *pdrive, int stage);
   TaskStatus AddQrad(Driver *pdrive, int stage);
 
-  // boundary-exchange wrapper tasks for the "vet_bvals" task list
+  // boundary-exchange wrapper tasks for the "sc_bvals" task list
   TaskStatus InitRecvIr(Driver *pdrive, int stage);
   TaskStatus RestrictIr(Driver *pdrive, int stage);
   TaskStatus SendIr(Driver *pdrive, int stage);
@@ -137,14 +137,14 @@ class VET {
   TaskStatus ClearSendIr(Driver *pdrive, int stage);
   TaskStatus ClearRecvIr(Driver *pdrive, int stage);
 
-  TaskStatus InitRecvBb(Driver *pdrive, int stage);
-  TaskStatus RestrictBb(Driver *pdrive, int stage);
-  TaskStatus SendBb(Driver *pdrive, int stage);
-  TaskStatus RecvBb(Driver *pdrive, int stage);
-  TaskStatus ApplyPhysicalBCsBb(Driver *pdrive, int stage);
-  TaskStatus ProlongateBb(Driver *pdrive, int stage);
-  TaskStatus ClearSendBb(Driver *pdrive, int stage);
-  TaskStatus ClearRecvBb(Driver *pdrive, int stage);
+  TaskStatus InitRecvSrad(Driver *pdrive, int stage);
+  TaskStatus RestrictSrad(Driver *pdrive, int stage);
+  TaskStatus SendSrad(Driver *pdrive, int stage);
+  TaskStatus RecvSrad(Driver *pdrive, int stage);
+  TaskStatus ApplyPhysicalBCsSrad(Driver *pdrive, int stage);
+  TaskStatus ProlongateSrad(Driver *pdrive, int stage);
+  TaskStatus ClearSendSrad(Driver *pdrive, int stage);
+  TaskStatus ClearRecvSrad(Driver *pdrive, int stage);
 
   // stagen task: radiation-relaxation timestep
   TaskStatus NewTimeStep(Driver *pdrive, int stage);
@@ -153,14 +153,14 @@ class VET {
   void UpdateOpacityAndSource();
   void ApplyPhysicalBCs();
   void ApplyPhysicalBCsSource();
-  //! Synchronous ir+bb exchange (same ops as vet_bvals; for unit tests without Driver)
+  //! Synchronous ir+srad exchange (same ops as sc_bvals; for unit tests without Driver)
   void ExchangeBoundariesSync();
   void ComputeJ();
   void CalculateMoments();
   void ComputeQrad();
   void UpdateSourceALI(Real &max_dS_rel);
 
-  // formal solution driver (vet/formal_solution.cpp)
+  // formal solution driver (sc/formal_solution.cpp)
   void FormalSolution();
 
   // Sweep implementations. Public because Kokkos CUDA device lambdas cannot be

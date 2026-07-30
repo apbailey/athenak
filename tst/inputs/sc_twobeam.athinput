@@ -1,0 +1,56 @@
+<comment>
+problem = nr_radiation SC two-beam mirror-symmetry test (Athena++ beam test style)
+
+# Two collimated pencil beams injected from the lower-x2 boundary into a vacuum box, in the
+# up-right (octant 0) and up-left (octant 1) directions, offset to x = -/+ x0 so they cross in
+# an X. One FormalSolution sweep transports them (bilinear upwind interp broadens them = SC
+# cross-diffusion, Davis Fig 6). The beams are exact mirror images, so E_r must be symmetric
+# under x -> -x; the pgen checks that and aborts if the asymmetry exceeds tol (machine-zero).
+
+<job>
+basename = sc_twobeam
+
+<mesh>
+nghost = 2
+nx1    = 128
+x1min  = -1.0
+x1max  =  1.0
+ix1_bc = outflow
+ox1_bc = outflow
+nx2    = 128
+x2min  = 0.0
+x2max  = 2.0
+ix2_bc = outflow
+ox2_bc = outflow
+nx3    = 1
+x3min  = -0.5
+x3max  = 0.5
+ix3_bc = periodic
+ox3_bc = periodic
+
+<meshblock>
+nx1 = 128
+nx2 = 128
+nx3 = 1
+
+<time>
+evolution  = static
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0
+tlim       = 0.0
+
+<nr_radiation>
+nmu          = 2          # nmu>=2 -> non-diagonal beam ordinate -> SC cross-diffusion (Davis Fig 6)
+opa          = 1.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+
+<problem>
+pgen_name = sc_twobeam
+i_beam    = 10.0
+x0        = 0.5
+halfwidth = 0.04
+tol       = 1.0e-12

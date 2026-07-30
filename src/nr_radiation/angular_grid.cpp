@@ -70,7 +70,7 @@ void LUDecompose(std::vector<std::vector<Real>> *a, int n, std::vector<int> *ind
     for (int j = 0; j < n; j++) big = std::max(big, std::abs((*a)[i][j]));
     if (big == 0.0) {
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                << std::endl << "Singular matrix in VET quadrature setup" << std::endl;
+                << std::endl << "Singular matrix in SC quadrature setup" << std::endl;
       std::exit(EXIT_FAILURE);
     }
     rowscale[i] = 1.0 / big;
@@ -158,11 +158,11 @@ int MatchPermutation(int i, int j, int k, const std::vector<std::array<int,3>> &
 }  // anonymous namespace
 
 //----------------------------------------------------------------------------------------
-// VETAngularGrid constructor
+// SCAngularGrid constructor
 
-VETAngularGrid::VETAngularGrid(int ndim_in, int nmu_in) :
-    mu("vet_mu",1,1,1),
-    wmu("vet_wmu",1),
+SCAngularGrid::SCAngularGrid(int ndim_in, int nmu_in) :
+    mu("sc_mu",1,1,1),
+    wmu("sc_wmu",1),
     ndim(ndim_in), nmu(nmu_in) {
   if (nmu < 1) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
@@ -206,12 +206,12 @@ VETAngularGrid::VETAngularGrid(int ndim_in, int nmu_in) :
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn VETAngularGrid::BuildCarlson1D
+//! \fn SCAngularGrid::BuildCarlson1D
 //! \brief 1D angular grid: plain Gauss-Legendre quadrature on mu in [-1,1], split into
 //! two octants (mu>0 outgoing, mu<0 incoming) -- Athena-C angles.c::carlson(), nDim==1
 //! branch.
 
-void VETAngularGrid::BuildCarlson1D() {
+void SCAngularGrid::BuildCarlson1D() {
   std::vector<Real> mutmp1d(2*nmu), wtmp(2*nmu);
   GaussLegendre(-1.0, 1.0, &mutmp1d, &wtmp, 2*nmu);
   for (int i = nmu; i < 2*nmu; i++) {
@@ -226,11 +226,11 @@ void VETAngularGrid::BuildCarlson1D() {
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn VETAngularGrid::BuildCarlsonND
+//! \fn SCAngularGrid::BuildCarlsonND
 //! \brief 2D/3D angular grid following Bruls et al. (1999) type-A construction --
 //! Athena-C angles.c::carlson(), nDim>1 branch, ported verbatim.
 
-void VETAngularGrid::BuildCarlsonND() {
+void SCAngularGrid::BuildCarlsonND() {
   // --- polar weights/angles (mu2tmp, wtmp); nmu<=6 enforced in ctor ---
   std::vector<Real> mu2tmp(nmu);
   Real deltamu = 2.0 / (2*nmu - 1);
@@ -326,11 +326,11 @@ void VETAngularGrid::BuildCarlsonND() {
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn VETAngularGrid::CheckNormalization
+//! \fn SCAngularGrid::CheckNormalization
 //! \brief Startup asserts: Sum_k w_k = 1, Sum_k w_k mu_ik = 0, Sum_k w_k mu_ik mu_jk =
 //! delta_ij/3 (Davis 2012 Sec. 3.2 normalisation check; theory-davis-2012.md checklist).
 
-void VETAngularGrid::CheckNormalization() {
+void SCAngularGrid::CheckNormalization() {
   const Real tol = 1.0e-10;
   Real sumw = 0.0, summu[3] = {0.0,0.0,0.0};
   Real summumu[3][3] = {{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
@@ -362,7 +362,7 @@ void VETAngularGrid::CheckNormalization() {
   }
   if (!ok) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "VET angular quadrature (ndim=" << ndim << ", nmu=" << nmu
+      << std::endl << "SC angular quadrature (ndim=" << ndim << ", nmu=" << nmu
       << ") failed normalization checks: Sum(w)=" << sumw
       << " Sum(w*mu)=(" << summu[0] << "," << summu[1] << "," << summu[2] << ")"
       << " Sum(w*mu*mu) diag=(" << summumu[0][0] << "," << summumu[1][1] << ","

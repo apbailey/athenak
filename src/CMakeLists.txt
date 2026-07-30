@@ -126,20 +126,20 @@ add_executable(
         pgen/tests/shwave.cpp
         pgen/tests/rad_beam.cpp
         pgen/tests/rad_linear_wave.cpp
-        pgen/tests/vet_beam.cpp
-        pgen/tests/vet_linwave.cpp
-        pgen/tests/vet_sphere.cpp
-        pgen/tests/vet_twobeam.cpp
+        pgen/tests/sc_beam.cpp
+        pgen/tests/sc_linwave.cpp
+        pgen/tests/sc_sphere.cpp
+        pgen/tests/sc_twobeam.cpp
         pgen/tests/z4c_boosted_puncture.cpp
         pgen/tests/z4c_linear_wave.cpp
 
         pgen/unit_tests/eos_compose.cpp
         pgen/unit_tests/gauss_legendre.cpp
-        pgen/unit_tests/vet_uniform.cpp
-        pgen/unit_tests/vet_attenuation.cpp
-        pgen/unit_tests/vet_moments.cpp
-        pgen/unit_tests/vet_atmosphere.cpp
-        pgen/unit_tests/vet_sweep_determinism.cpp
+        pgen/unit_tests/sc_uniform.cpp
+        pgen/unit_tests/sc_attenuation.cpp
+        pgen/unit_tests/sc_moments.cpp
+        pgen/unit_tests/sc_atmosphere.cpp
+        pgen/unit_tests/sc_sweep_determinism.cpp
 
         radiation/radiation.cpp
         radiation/radiation_fluxes.cpp
@@ -151,11 +151,11 @@ add_executable(
 
         nr_radiation/nr_radiation.cpp
         nr_radiation/angular_grid.cpp
-        nr_radiation/vet/formal_solution.cpp
-        nr_radiation/vet/iteration.cpp
-        nr_radiation/vet/get_moments.cpp
-        nr_radiation/vet/coupling.cpp
-        nr_radiation/vet/newdt.cpp
+        nr_radiation/sc/formal_solution.cpp
+        nr_radiation/sc/iteration.cpp
+        nr_radiation/sc/get_moments.cpp
+        nr_radiation/sc/coupling.cpp
+        nr_radiation/sc/newdt.cpp
 
         shearing_box/orbital_advection.cpp
         shearing_box/orbital_advection_cc.cpp

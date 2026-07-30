@@ -12,7 +12,7 @@
 //!     <output3>
 //!     file_type  = perf
 //!     perf_probe = kernels,memory   # comma-list of {kernels,memory,comms,iteration}; OMIT = all
-//!     kernels    = vet_sweep*       # optional collection filter (only these kernels are timed)
+//!     kernels    = sc_sweep*       # optional collection filter (only these kernels are timed)
 //!     dcycle     = 50               # cadence (or dt=..)
 //! perf::Enable() scans those blocks EARLY (before any kernel), builds a registry of PerfProbe
 //! instances, and registers the Kokkos callbacks / hooks. The PerfOutput athenak output type then
@@ -68,7 +68,7 @@ double CommWaitStart();
 void CommWaitStop(const char *bucket, double t0);
 
 //! Per-solve iteration/convergence hook (active only if an iteration probe is enabled). Called once
-//! per VET solve; accumulates n_solves / cum_niter and records last resid/nblocks and cells/nang
+//! per SC solve; accumulates n_solves / cum_niter and records last resid/nblocks and cells/nang
 //! (cells x nang x cum_niter / sweep-time -> gcaups is derived in analyze.py).
 void EmitIteration(int niter, double resid, int nblocks, int cells, int nang);
 

@@ -6,7 +6,7 @@
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
 //! \file angular_grid.hpp
-//! \brief Angular quadrature grid for the LTE short-characteristics VET solver.
+//! \brief Angular quadrature grid for the LTE short-characteristics SC solver.
 //!
 //! Implements the Bruls et al. (1999, A&A 348, 233) "type-A" discrete-ordinate grid
 //! (Carlson 1963 symmetric S_N method), as described in Davis, Stone & Jiang (2012)
@@ -19,12 +19,12 @@
 namespace nr_radiation {
 
 //----------------------------------------------------------------------------------------
-//! \class VETAngularGrid
+//! \class SCAngularGrid
 //! \brief discrete-ordinate angular grid: direction cosines and quadrature weights
 
-class VETAngularGrid {
+class SCAngularGrid {
  public:
-  VETAngularGrid(int ndim, int nmu);
+  SCAngularGrid(int ndim, int nmu);
 
   int ndim;   // 1, 2, or 3
   int nmu;    // input <nr_radiation>/nmu parameter (number of polar levels)

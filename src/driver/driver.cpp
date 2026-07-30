@@ -332,7 +332,7 @@ void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool re
     if (pz4c != nullptr) {
       (void) pmesh->pmb_pack->pz4c->NewTimeStep(this, nexp_stages);
     }
-    nr_radiation::VET *pnrrad = pmesh->pmb_pack->pnrrad;
+    nr_radiation::SC *pnrrad = pmesh->pmb_pack->pnrrad;
     if (pnrrad != nullptr) {
       (void) pnrrad->NewTimeStep(this, nexp_stages);
     }

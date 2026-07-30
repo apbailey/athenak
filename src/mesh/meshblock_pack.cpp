@@ -175,17 +175,17 @@ void MeshBlockPack::AddPhysics(ParameterInput *pin) {
     prad = nullptr;
   }
 
-  // (5b) NR_RADIATION (LTE-only short-characteristics VET solver)
+  // (5b) NR_RADIATION (LTE-only short-characteristics SC solver)
   // Deliberately NOT added to the hydro/mhd task-list-assembly exclusion guards above:
   // unlike the GR <radiation> module, nr_radiation does not take over hydro/mhd's task
   // list -- it inserts its own tasks into the existing "stagen" list assembled by
-  // Hydro/MHD themselves (see VET::AssembleTasks), so that with nr_radiation
+  // Hydro/MHD themselves (see SC::AssembleTasks), so that with nr_radiation
   // disabled, hydro/mhd behavior and task-list assembly are completely unaffected
   // (Rule 4: no impact when radiation is off).
   if (pin->DoesBlockExist("nr_radiation")) {
-    pnrrad = new nr_radiation::VET(this, pin);
+    pnrrad = new nr_radiation::SC(this, pin);
     nphysics++;
-    tl_map.insert(std::make_pair("vet_bvals", std::make_shared<TaskList>()));
+    tl_map.insert(std::make_pair("sc_bvals", std::make_shared<TaskList>()));
     pnrrad->AssembleTasks(tl_map);
   } else {
     pnrrad = nullptr;

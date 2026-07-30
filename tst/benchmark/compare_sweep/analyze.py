@@ -1,10 +1,10 @@
 """
-analyze.py -- wavefront vs diagonal: which VET sweep is faster, and by how much.
+analyze.py -- wavefront vs diagonal: which SC sweep is faster, and by how much.
 
 Reads one performance_driver.py run directory (e.g. benchmark/compare_sweep/<device>/) and writes
 its verdict to analysis.txt there:
     manifest.json              configs + provenance (device/commit/host)
-    raw/<label>/perf.kernels    per-kernel cumulative time; sum of vet_sweep* = sweep time
+    raw/<label>/perf.kernels    per-kernel cumulative time; sum of sc_sweep* = sweep time
     raw/<label>/perf.iteration  cum_niter, cells, nblocks, nang -- the work done
 
 For each config it derives the SC sweep throughput
@@ -15,7 +15,7 @@ is fastest and by how much. Grouping by the MEASURED problem size keeps a method
 
     cd tst && python benchmark/compare_sweep/analyze.py benchmark/compare_sweep/<device>   # e.g. cpu/
 
-Caveat: sweep time is the sum of the fenced vet_sweep* kernel times (device only). It misses the host
+Caveat: sweep time is the sum of the fenced sc_sweep* kernel times (device only). It misses the host
 plane-loop overhead of the wavefront traversal, which biases this comparison in wavefront's favor at
 small problem sizes (~12% at 32^3, ~1% at 128^3). Treat a narrow small-size wavefront win with
 suspicion -- it may not survive a host-inclusive timer.
@@ -76,16 +76,16 @@ def _f(x):
 
 
 def _sum_sweep(kern_rows):
-    """Sum of the fenced vet_sweep* kernel times in one snapshot."""
+    """Sum of the fenced sc_sweep* kernel times in one snapshot."""
     return sum(_f(r.get("total_ms")) or 0.0 for r in kern_rows
-               if r.get("kernel", "").startswith("vet_sweep"))
+               if r.get("kernel", "").startswith("sc_sweep"))
 
 
 def metrics(cfg):
     """(sweep_ms, work|None, gcaups|None) for one config -- MAIN-LOOP ONLY.
 
     Probes are cumulative, so the cycle-0 snapshot already carries any sweeps the pgen ran at setup
-    (vet_uniform does one FormalSolution for its I==b check). Subtracting the first (baseline)
+    (sc_uniform does one FormalSolution for its I==b check). Subtracting the first (baseline)
     snapshot from the last isolates the sweeps driven through the main loop -- the controlled effort
     we mean to time. One snapshot -> nothing to subtract.
     """
@@ -178,7 +178,7 @@ def report(man, configs):
                 "     identically; 'xfaster' there blends per-sweep speed with convergence."]
     if skipped:
         out.append(f"\n  (skipped, no sweep+iteration data: {', '.join(skipped)})")
-    out += ["", "note: sweep time is device-only (fenced vet_sweep* kernels); it hides the host "
+    out += ["", "note: sweep time is device-only (fenced sc_sweep* kernels); it hides the host "
             "plane-loop overhead of",
             "the wavefront traversal, biasing toward wavefront at small sizes (~12% at 32^3, ~1% at "
             "128^3). A",

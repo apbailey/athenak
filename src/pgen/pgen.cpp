@@ -916,14 +916,14 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     RadiationLinearWave(pin, is_restart);
   } else if (pgen_fun_name.compare("rad_beam") == 0) {
     RadiationBeam(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_beam") == 0) {
-    VETBeam(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_linwave") == 0) {
-    VETLinwave(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_sphere") == 0) {
-    VETSphere(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_twobeam") == 0) {
-    VETTwoBeam(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_beam") == 0) {
+    SCBeam(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_linwave") == 0) {
+    SCLinwave(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_sphere") == 0) {
+    SCSphere(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_twobeam") == 0) {
+    SCTwoBeam(pin, is_restart);
   } else if (pgen_fun_name.compare("shock_tube") == 0) {
     ShockTube(pin, is_restart);
   } else if (pgen_fun_name.compare("shwave") == 0) {
@@ -938,16 +938,16 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     EOSCompose(pin, is_restart);
   } else if (pgen_fun_name.compare("gauss_legendre") == 0) {
     GaussLegendre(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_uniform") == 0) {
-    VETUniform(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_attenuation") == 0) {
-    VETAttenuation(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_moments") == 0) {
-    VETMoments(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_atmosphere") == 0) {
-    VETAtmosphere(pin, is_restart);
-  } else if (pgen_fun_name.compare("vet_sweep_determinism") == 0) {
-    VETSweepDeterminism(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_uniform") == 0) {
+    SCUniform(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_attenuation") == 0) {
+    SCAttenuation(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_moments") == 0) {
+    SCMoments(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_atmosphere") == 0) {
+    SCAtmosphere(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_sweep_determinism") == 0) {
+    SCSweepDeterminism(pin, is_restart);
 
   } else {
     // name not set on command line or input file, print warning and quit

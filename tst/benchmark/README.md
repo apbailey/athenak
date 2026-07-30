@@ -22,7 +22,7 @@ file and the binary writes raw time-series files, no code changes:
 <output9>
 file_type  = perf
 perf_probe = kernels,iteration     # comma-list; OMIT the line to enable all four
-kernels    = vet_sweep*            # optional glob: only these kernels are timed (kernels probe)
+kernels    = sc_sweep*            # optional glob: only these kernels are timed (kernels probe)
 dcycle     = 50                    # cadence, like any output (or dt = 0.1; or dt = 1e30 for end-only)
 ```
 
@@ -91,7 +91,7 @@ reads or reformats measurements — that's `analyze.py`'s job. Run it from `tst/
                                       multi-axis sweeps are just nested loops
   probes   list[str]                 default: all four probes
   cadence  str                       "final" (default) | "every N" | "dt X"
-  filter   str                       kernel-name glob, e.g. "vet_sweep*"
+  filter   str                       kernel-name glob, e.g. "sc_sweep*"
 ```
 
 ```bash
@@ -103,7 +103,7 @@ python benchmark/performance_driver.py benchmark/compare_sweep/config.py
 
 ```bash
 python benchmark/performance_driver.py inputs/mydeck.athinput \
-    --kernels --iter --filter 'vet_sweep*' nr_radiation/sweep=wavefront,diagonal -o myrun
+    --kernels --iter --filter 'sc_sweep*' nr_radiation/sweep=wavefront,diagonal -o myrun
 ```
 
 **Output:** `<name>/<device>/` with `manifest.json` + `analysis.txt` at top and per-config files under
@@ -126,7 +126,7 @@ throughput
   gcaups = cum_niter * cells * nblocks * nang / sweep_seconds
 ```
 
-from the `kernels` (summed `vet_sweep*` time) and `iteration` probes — differencing out the pgen's
+from the `kernels` (summed `sc_sweep*` time) and `iteration` probes — differencing out the pgen's
 cycle-0 setup sweep — groups by measured problem size, and prints one verdict per size, saved to
 `analysis.txt`:
 

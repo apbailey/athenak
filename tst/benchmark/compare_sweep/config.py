@@ -1,8 +1,8 @@
-# Config: SC sweep throughput, wavefront vs diagonal -- reproduces vet_bench's three suites.
+# Config: SC sweep throughput, wavefront vs diagonal -- reproduces sc_bench's three suites.
 #
-# Matches the A100 vet_bench benchmark (~/Downloads/REPORT.md, suites A.1-A.3) through the file-based
-# perf framework. The deck uses the vet_uniform pgen (constant chi, S=b, I=b steady state) driven by
-# SolveTransfer; itermin=iter_max=NSWEEP forces exactly NSWEEP full-cost sweeps (vet_bench's fixed
+# Matches the A100 sc_bench benchmark (~/Downloads/REPORT.md, suites A.1-A.3) through the file-based
+# perf framework. The deck uses the sc_uniform pgen (constant chi, S=b, I=b steady state) driven by
+# SolveTransfer; itermin=iter_max=NSWEEP forces exactly NSWEEP full-cost sweeps (sc_bench's fixed
 # nbench effort). analyze.py groups by measured problem size and orders rows by config emission, so
 # each suite prints as a contiguous block, one wavefront-vs-diagonal verdict per point.
 #
@@ -12,12 +12,12 @@
 #   run:  cd tst && python benchmark/performance_driver.py benchmark/compare_sweep/config.py
 #   then: python benchmark/compare_sweep/analyze.py benchmark/compare_sweep/<device>  # e.g. cpu/
 
-deck    = "inputs/vet_sweep_bench.athinput"
+deck    = "inputs/sc_sweep_bench.athinput"
 probes  = ["kernels", "iteration"]       # iteration -> gcaups; kernels -> sweep time
 cadence = "final"                        # cycle-0 (post-pgen) + final snapshot; analyze differences them
-filter  = "vet_sweep*"                   # only fence/time the sweep kernels (less perturbation)
+filter  = "sc_sweep*"                   # only fence/time the sweep kernels (less perturbation)
 
-NSWEEP  = 20                             # vet_bench nbench: force exactly this many sweeps
+NSWEEP  = 20                             # sc_bench nbench: force exactly this many sweeps
 
 
 def cube(mesh, block, nmu):

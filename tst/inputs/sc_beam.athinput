@@ -1,0 +1,71 @@
+# AthenaK input: LTE SC pencil-beam test (Athena-C athinput.beam2d analogue)
+
+<comment>
+problem   = SC beam2d
+reference = Davis, Stone & Jiang 2012 Fig. 6 (linear interp)
+
+<job>
+basename  = Beam2D
+
+<mesh>
+nghost    = 2
+nx1       = 64
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = user
+ox1_bc    = user
+
+nx2       = 64
+x2min     = 0.0
+x2max     = 1.0
+ix2_bc    = user
+ox2_bc    = user
+
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 64
+nx2       = 64
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.4
+nlim       = 1
+tlim       = 1.0e5
+ndiag      = 1
+
+<hydro>
+eos         = ideal
+reconstruct = plm
+rsolver     = llf
+gamma       = 1.66666666667
+
+<nr_radiation>
+nmu          = 6
+opa          = 6.4e-7
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+iter_max     = 80
+iter_tol     = 1.0e-12   # test uses tight tol; production default is 1.0e-6
+
+<problem>
+pgen_name = sc_beam
+iang      = 2
+ihor1     = 24
+ihor2     = -1
+ivert1    = -1
+ivert2    = -1
+dens      = 1.0
+pgas      = 1.0
+
+<output1>
+file_type = hst
+dt        = 1.0

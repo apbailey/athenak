@@ -4,7 +4,7 @@
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
 //! \file nr_radiation.cpp
-//! \brief implementation of the VET class constructor/destructor
+//! \brief implementation of the SC class constructor/destructor
 
 #include <float.h>
 
@@ -24,22 +24,22 @@ namespace nr_radiation {
 //----------------------------------------------------------------------------------------
 // constructor, initializes data structures and parameters
 
-VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
-    ir("vet_ir",1,1,1,1,1),
-    coarse_ir("vet_coarse_ir",1,1,1,1,1),
-    bb("vet_bb",1,1,1,1,1),
-    coarse_bb("vet_coarse_bb",1,1,1,1,1),
-    chi("vet_chi",1,1,1,1),
-    planck("vet_planck",1,1,1,1),
-    jmean("vet_jmean",1,1,1,1),
-    jmean_old("vet_jmean_old",1,1,1,1),
-    qrad("vet_qrad",1,1,1,1),
-    sigma_s("vet_sigma_s",1,1,1,1),
-    eps("vet_eps",1,1,1,1),
-    lamstr("vet_lamstr",1,1,1,1),
-    i_in("vet_i_in",1,1),
-    moments("vet_moments",1,1,1,1,1),
-    wfreq("vet_wfreq",1),
+SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
+    ir("sc_ir",1,1,1,1,1),
+    coarse_ir("sc_coarse_ir",1,1,1,1,1),
+    srad("sc_srad",1,1,1,1,1),
+    coarse_srad("sc_coarse_srad",1,1,1,1,1),
+    chi("sc_chi",1,1,1,1),
+    planck("sc_planck",1,1,1,1),
+    jmean("sc_jmean",1,1,1,1),
+    jmean_old("sc_jmean_old",1,1,1,1),
+    qrad("sc_qrad",1,1,1,1),
+    sigma_s("sc_sigma_s",1,1,1,1),
+    eps("sc_eps",1,1,1,1),
+    lamstr("sc_lamstr",1,1,1,1),
+    i_in("sc_i_in",1,1),
+    moments("sc_moments",1,1,1,1,1),
+    wfreq("sc_wfreq",1),
     pmy_pack(ppack) {
   // straight-line rays require flat, Cartesian spacetime
   if (pmy_pack->pcoord->is_general_relativistic) {
@@ -120,7 +120,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   int nmu = pin->GetInteger("nr_radiation", "nmu");
   Mesh *pm = pmy_pack->pmesh;
   int ndim = (pm->three_d) ? 3 : ((pm->two_d) ? 2 : 1);
-  pang = new VETAngularGrid(ndim, nmu);
+  pang = new SCAngularGrid(ndim, nmu);
   nang_tot = pang->noct * pang->nang;
 
   // Array allocation ----------------------------------------------------------------
@@ -131,7 +131,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*(indcs.ng)) : 1;
 
   Kokkos::realloc(ir, nmb, nang_tot, ncells3, ncells2, ncells1);
-  Kokkos::realloc(bb, nmb, 1, ncells3, ncells2, ncells1);
+  Kokkos::realloc(srad, nmb, 1, ncells3, ncells2, ncells1);
   Kokkos::realloc(chi, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(planck, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(jmean, nmb, ncells3, ncells2, ncells1);
@@ -142,7 +142,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(eps,     nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(lamstr,  nmb, ncells3, ncells2, ncells1);
   Kokkos::deep_copy(ir, 0.0);
-  Kokkos::deep_copy(bb, 0.0);
+  Kokkos::deep_copy(srad, 0.0);
   Kokkos::deep_copy(jmean, 0.0);
   Kokkos::deep_copy(qrad, 0.0);
   Kokkos::deep_copy(moments, 0.0);
@@ -151,7 +151,7 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::deep_copy(lamstr, 0.0);
   Kokkos::deep_copy(planck, 0.0);
 
-  // coarse_ir / coarse_bb for SMR/AMR (CC Restrict/Prolong)
+  // coarse_ir / coarse_srad for SMR/AMR (CC Restrict/Prolong)
   {
     int nccells1 = indcs.cnx1 + 2*(indcs.ng);
     int nccells2 = (indcs.cnx2 > 1) ? (indcs.cnx2 + 2*(indcs.ng)) : 1;
@@ -160,9 +160,9 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
     if (nccells2 < 1) nccells2 = ncells2;
     if (nccells3 < 1) nccells3 = ncells3;
     Kokkos::realloc(coarse_ir, nmb, nang_tot, nccells3, nccells2, nccells1);
-    Kokkos::realloc(coarse_bb, nmb, 1, nccells3, nccells2, nccells1);
+    Kokkos::realloc(coarse_srad, nmb, 1, nccells3, nccells2, nccells1);
     Kokkos::deep_copy(coarse_ir, 0.0);
-    Kokkos::deep_copy(coarse_bb, 0.0);
+    Kokkos::deep_copy(coarse_srad, 0.0);
   }
 
   // Inflow BC table (nang_tot, 6 faces): default vacuum
@@ -175,8 +175,8 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
 
   pbval_ir = new MeshBoundaryValuesCC(ppack, pin, false);
   pbval_ir->InitializeBuffers(nang_tot);
-  pbval_bb = new MeshBoundaryValuesCC(ppack, pin, false);
-  pbval_bb->InitializeBuffers(1);
+  pbval_srad = new MeshBoundaryValuesCC(ppack, pin, false);
+  pbval_srad->InitializeBuffers(1);
 
   dtnew = std::numeric_limits<Real>::max();
 }
@@ -184,8 +184,8 @@ VET::VET(MeshBlockPack *ppack, ParameterInput *pin) :
 //----------------------------------------------------------------------------------------
 // destructor
 
-VET::~VET() {
-  delete pbval_bb;
+SC::~SC() {
+  delete pbval_srad;
   delete pbval_ir;
   delete pang;
 }

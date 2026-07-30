@@ -14,7 +14,7 @@ Two front-ends, one runner:
                                               multi-axis sweeps are just loops (required)
             probes  : list[str]               default: kernels, memory, comms, iteration
             cadence : str                     "final" (default) | "every N" | "dt X"
-            filter  : str                     kernel-name glob (e.g. "vet_sweep*")
+            filter  : str                     kernel-name glob (e.g. "sc_sweep*")
     performance_driver.py <deck.athinput> [--kernels --memory --comms --iter] [--every N | --dt X]
                    [--filter GLOB] [block/name=v1,v2,... ...] [-o results/<name>]
         Quick one-off: builds a one-config experiment (a comma-valued override still gives a small

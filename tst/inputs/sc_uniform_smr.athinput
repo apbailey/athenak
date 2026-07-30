@@ -1,0 +1,62 @@
+<comment>
+problem = nr_radiation SC uniform test with static mesh refinement
+# Uniform I=S=b; FormalSolution + Restrict/Prolong must preserve I==b
+
+<job>
+basename = ut_sc_uniform_smr
+
+<mesh>
+nghost = 2
+nx1    = 32
+x1min  = 0.0
+x1max  = 1.0
+ix1_bc = outflow
+ox1_bc = outflow
+nx2    = 32
+x2min  = 0.0
+x2max  = 1.0
+ix2_bc = outflow
+ox2_bc = outflow
+nx3    = 1
+x3min  = -0.5
+x3max  = 0.5
+ix3_bc = periodic
+ox3_bc = periodic
+
+<meshblock>
+nx1 = 16
+nx2 = 16
+nx3 = 1
+
+<mesh_refinement>
+refinement = static
+
+<refined_region1>
+level = 1
+x1min = 0.25
+x1max = 0.75
+x2min = 0.25
+x2max = 0.75
+x3min = -0.5
+x3max = 0.5
+
+<time>
+evolution  = static
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0
+tlim       = 0.0
+
+<nr_radiation>
+nmu          = 2
+opa          = 1.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+
+<problem>
+pgen_name = sc_uniform
+chi    = 5.0
+source = 1.0
+tol    = 1.0e-11
