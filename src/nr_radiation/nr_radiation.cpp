@@ -76,6 +76,15 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   itermin  = pin->GetOrAddInteger("nr_radiation", "itermin", 2);
   iter_tol = pin->GetOrAddReal("nr_radiation", "iter_tol", 1.0e-6);
   ali_tol  = pin->GetOrAddReal("nr_radiation", "ali_tol", 1.0e-5);
+  // ALI over-relaxation factor (Phase I1 / Option 0). S <- S + omega*dS (TF95 Eq. 25).
+  // Default 1.0 reproduces standard Jacobi-ALI bit-for-bit; (0,2) is the SOR convergence range.
+  ali_omega = pin->GetOrAddReal("nr_radiation", "ali_omega", 1.0);
+  if (ali_omega <= 0.0 || ali_omega >= 2.0) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/ali_omega must be in (0,2); got " << ali_omega
+      << " (over-relaxation is unstable for omega>=2, non-advancing for omega<=0)" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
   last_niter = 0;
   last_max_rel = 0.0;
   cnv_flag = false;

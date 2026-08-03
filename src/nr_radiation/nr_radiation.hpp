@@ -82,6 +82,7 @@ class SC {
   int itermin;       // minimum iterations before allowing early exit (default 2)
   Real iter_tol;     // LTE residual: max|ΔJ/J|
   Real ali_tol;      // ALI residual: max|ΔS/S| (Eq. 25)
+  Real ali_omega;    // ALI over-relaxation (JOR/SOR) factor; 1.0 ≡ standard Jacobi-ALI (TF95 Eq. 25)
   int last_niter;    // diagnostic: number of iterations used in the most recent solve
   Real last_max_rel; // diagnostic: final residual from most recent solve
   bool cnv_flag;     // true if last SolveTransfer converged

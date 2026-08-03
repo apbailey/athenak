@@ -317,8 +317,14 @@ void SC::ComputeJ() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void SC::UpdateSourceALI
-//! \brief Jacobi ALI update (Davis Eq. 24 / Athena-C update_sfunc).
-//! ΔS = [(1−ε)J + εB − S] / [1 − (1−ε)Λ*]; returns max|ΔS/S|.
+//! \brief Jacobi-ALI source update with optional over-relaxation (Davis Eq. 24 / Athena-C
+//! update_sfunc). ΔS = [(1−ε)J + εB − S] / [1 − (1−ε)Λ*] (Eq. 24); S ← S + ω·ΔS (TF95 Eq. 25),
+//! ω = ali_omega ∈ (0,2), default 1.0 (≡ standard Jacobi-ALI, bit-identical). Returns the residual
+//! max|ΔS/S| computed from the UNRELAXED ΔS (Athena-C gausseid_1d.c:238) so the stopping test
+//! measures true fixed-point distance independent of ω (at convergence ΔS→0 regardless of ω).
+//! NOTE (Rule 2): TF95's ω_opt = 2/(1+√(1−δ)) (Eq. 26) is derived for GAUSS–SEIDEL SOR; applied to
+//! the Jacobi update this is JOR / extrapolated Jacobi — valid and stable for 0<ω<2 but a weaker
+//! accelerator (≲2×), and ω_opt does NOT apply. Fixed ω only; adaptive ω is deferred to the GS phase.
 
 void SC::UpdateSourceALI(Real &max_dS_rel) {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
@@ -334,6 +340,7 @@ void SC::UpdateSourceALI(Real &max_dS_rel) {
   auto jmean_ = jmean;
   auto eps_ = eps;
   auto lam_ = lamstr;
+  Real omega = ali_omega;   // hoist member: a KOKKOS_LAMBDA cannot capture this->ali_omega
 
   Real dSmax = 0.0;
   Kokkos::parallel_reduce("sc_ali", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
@@ -356,8 +363,13 @@ void SC::UpdateSourceALI(Real &max_dS_rel) {
     if (fabs(denom) < 1.0e-14) denom = (denom >= 0.0) ? 1.0e-14 : -1.0e-14;
     Real Snew = (1.0 - epsi) * J + epsi * B;
     Real dS = (Snew - S) / denom;
-    srad_(m,0,k,j,i) = S + dS;
+    // Residual from the UNRELAXED dS (ω-independent stopping test); over-relax only the write-back.
     Real r = (fabs(S) > 0.0) ? fabs(dS / S) : fabs(dS);
+    // A diverged iterate (e.g. ω too large) makes dS→NaN; fmax silently drops NaN and would leave
+    // the reduction at its identity, masquerading as "converged". Map NaN to a huge residual so
+    // divergence is reported as non-convergence instead. (No effect on healthy runs.)
+    if (r != r) r = 1.0e300;
+    srad_(m,0,k,j,i) = S + omega * dS;
     lmax = fmax(lmax, r);
   }, Kokkos::Max<Real>(dSmax));
 

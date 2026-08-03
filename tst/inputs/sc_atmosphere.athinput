@@ -47,6 +47,7 @@ sweep        = wavefront
 iter_max     = 5000
 itermin      = 2
 ali_tol      = 1.0e-6
+ali_omega    = 1.0          # ALI over-relaxation (SOR); 1.0 = standard Jacobi-ALI; range (0,2)
 
 <problem>
 pgen_name = sc_atmosphere
