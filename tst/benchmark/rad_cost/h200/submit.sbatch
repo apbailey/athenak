@@ -32,7 +32,7 @@ export ATHENAK_BUILD="$BUILD/src"
 export ATHENAK_LAUNCHER="srun -n 1"
 export ATHENAK_DEVICE="$DEVICE"
 export RAD_COST_PROFILE="${RAD_COST_PROFILE:-full}"
-export RAD_COST_OUT="$ATHENAK/tst/benchmark/rad_cost/$DEVICE"
+export RAD_COST_OUT="${RAD_COST_OUT:-$ATHENAK/tst/benchmark/rad_cost/$DEVICE}"
 
 cd "$ATHENAK/tst"
 python3 benchmark/rad_cost/run_rad_cost.py
