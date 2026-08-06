@@ -113,6 +113,13 @@ def build_grid(profile):
         nlim = 5
         g = [dict(suite="val", B=8, N=8 * k, nmu=2, sweep="wavefront") for k in (1, 2)]
         return g, nlim
+    if profile == "b64":
+        # 64^3-block saturation sweep: nmb=8/27/64 (mesh 128^3/192^3/256^3), nmu=3, to get a
+        # SATURATED 64^3 headline (radiation parallelism = nblocks*nang needs enough blocks).
+        nlim = 50
+        g = [dict(suite="b64", B=64, N=64 * k, nmu=3, sweep=sw)
+             for sw in ("wavefront", "diagonal") for k in (2, 3, 4)]
+        return g, nlim
     nlim = 50
     g = []
     # A. saturation: fixed 32^3 blocks, grow block count -> nmb=k^3 (nmu=3)
