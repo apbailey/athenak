@@ -532,6 +532,12 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
 
     // Davis §3.5 / Athena-C order: refresh ghosts before the formal solution
     pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_bvals", 0);
+
+    if (use_ali && ali_mode == "gauss_seidel") {
+      // Center-out Gauss-Seidel-ALI: fused sweep (formal solve + in-sweep J + per-plane S-update).
+      // Replaces FormalSolution()+ComputeJ()+UpdateSourceALI() for this iteration.
+      SweepUpdateGS(max_rel);
+    } else {
     FormalSolution();
     ComputeJ();
 
@@ -576,6 +582,7 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
       if (dJmax == 0.0 && dJabs_max > 0.0) dJmax = 1.0;
       max_rel = dJmax;
     }
+    }  // end else (ali_mode != gauss_seidel): standard FormalSolution+ComputeJ+(ALI|LTE)
 
     last_niter = it + 1;
     last_max_rel = max_rel;

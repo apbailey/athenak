@@ -309,4 +309,158 @@ void SC::FormalSolutionJacobi() {
   });
 }
 
+//----------------------------------------------------------------------------------------
+//! \fn void SC::SweepUpdateGS
+//! \brief Center-out Gauss-Seidel-ALI (Davis 2012 §3.4 / TF95; Option B, iteration/prototype/).
+//! One fused wavefront pass. Per host plane h: Kernel A sweeps plane h for all octants,
+//! accumulating ir, the mean intensity jmean (in-sweep) and the diagonal Λ* (lamstr); Kernel B
+//! then finalizes every cell whose LAST octant just arrived — h == max(i-is,ie-i)[+max(j..)+..] —
+//! via the Eq. 24 update S ← S + ω·ΔS IN PLACE, so downstream planes read the fresh S. Returns
+//! max|ΔS/S| (from the UNRELAXED ΔS, like UpdateSourceALI). Wavefront (center-out) ordering only;
+//! replaces FormalSolution+ComputeJ+UpdateSourceALI on the ali_mode=="gauss_seidel" path. The
+//! ali_mode=="jacobi" path is untouched and bit-identical. (Local scatter: see below / Option 2.)
+
+void SC::SweepUpdateGS(Real &max_dS_rel) {
+  Kokkos::deep_copy(DevExeSpace(), jmean, 0.0);
+  Kokkos::deep_copy(DevExeSpace(), lamstr, 0.0);
+
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  int ndim = pang->ndim;
+  int nang = pang->nang;
+  int nangt1 = nang_tot - 1;
+  auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto ir_ = ir;
+  auto chi_ = chi;
+  auto srad_ = srad;
+  auto lam_ = lamstr;
+  auto jmean_ = jmean;
+  auto eps_ = eps;
+  auto planck_ = planck;
+  Real omega = ali_omega;
+
+  int hmax;
+  if (ndim == 1) hmax = nx1 - 1;
+  else if (ndim == 2) hmax = nx1 + nx2 - 2;
+  else hmax = nx1 + nx2 + nx3 - 3;
+
+  int nx1a = ie - is + 1, nx2a = je - js + 1, nx3a = ke - ks + 1;
+  int nmkji = (nmb1+1)*nx3a*nx2a*nx1a;
+
+  Real gmax = 0.0;
+  for (int h = 0; h <= hmax; ++h) {
+    // ---- Kernel A: sweep plane h (all octants); accumulate ir, jmean, lamstr ----
+    if (ndim == 1) {
+      par_for("gs_sweepA1d", DevExeSpace(), 0, nmb1, 0, nangt1,
+      KOKKOS_LAMBDA(int m, int angg) {
+        int oct = angg / nang;
+        int a = angg - oct*nang;
+        Real mux = mu.d_view(oct,a,0);
+        int sx = (mux > 0.0) ? 1 : -1;
+        int i = (sx > 0) ? (is + h) : (ie - h);
+        Real dx1v = mbsize.d_view(m).dx1;
+        Real a1 = 0.0;
+        Real I = UpdateCellSC(chi_,srad_,ir_,m,angg, i,js,ks, sx,0,0,
+                              mux,0.0,0.0, dx1v,0.0,0.0, ndim,ks,js, &a1);
+        ir_(m,angg,ks,js,i) = I;
+        Kokkos::atomic_add(&lam_(m,ks,js,i), wmu.d_view(a) * a1);
+        Kokkos::atomic_add(&jmean_(m,ks,js,i), wmu.d_view(a) * I);
+      });
+    } else if (ndim == 2) {
+      par_for("gs_sweepA2d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (nx1-1),
+      KOKKOS_LAMBDA(int m, int angg, int li1) {
+        int li2 = h - li1;
+        if (li2 < 0 || li2 > nx2-1) return;
+        int oct = angg / nang;
+        int a = angg - oct*nang;
+        Real mux = mu.d_view(oct,a,0);
+        Real muy = mu.d_view(oct,a,1);
+        int sx = (mux > 0.0) ? 1 : -1;
+        int sy = (muy > 0.0) ? 1 : -1;
+        int i = (sx > 0) ? (is + li1) : (ie - li1);
+        int j = (sy > 0) ? (js + li2) : (je - li2);
+        Real dx1v = mbsize.d_view(m).dx1;
+        Real dx2v = mbsize.d_view(m).dx2;
+        Real a1 = 0.0;
+        Real I = UpdateCellSC(chi_,srad_,ir_,m,angg, i,j,ks, sx,sy,0,
+                              mux,muy,0.0, dx1v,dx2v,0.0, ndim,ks,js, &a1);
+        ir_(m,angg,ks,j,i) = I;
+        Kokkos::atomic_add(&lam_(m,ks,j,i), wmu.d_view(a) * a1);
+        Kokkos::atomic_add(&jmean_(m,ks,j,i), wmu.d_view(a) * I);
+      });
+    } else {
+      par_for("gs_sweepA3d", DevExeSpace(), 0, nmb1, 0, nangt1, 0,(nx1-1), 0,(nx2-1),
+      KOKKOS_LAMBDA(int m, int angg, int li1, int li2) {
+        int li3 = h - li1 - li2;
+        if (li3 < 0 || li3 > nx3-1) return;
+        int oct = angg / nang;
+        int a = angg - oct*nang;
+        Real mux = mu.d_view(oct,a,0);
+        Real muy = mu.d_view(oct,a,1);
+        Real muz = mu.d_view(oct,a,2);
+        int sx = (mux > 0.0) ? 1 : -1;
+        int sy = (muy > 0.0) ? 1 : -1;
+        int sz = (muz > 0.0) ? 1 : -1;
+        int i = (sx > 0) ? (is + li1) : (ie - li1);
+        int j = (sy > 0) ? (js + li2) : (je - li2);
+        int k = (sz > 0) ? (ks + li3) : (ke - li3);
+        Real dx1v = mbsize.d_view(m).dx1;
+        Real dx2v = mbsize.d_view(m).dx2;
+        Real dx3v = mbsize.d_view(m).dx3;
+        Real a1 = 0.0;
+        Real I = UpdateCellSC(chi_,srad_,ir_,m,angg, i,j,k, sx,sy,sz,
+                              mux,muy,muz, dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+        ir_(m,angg,k,j,i) = I;
+        Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+        Kokkos::atomic_add(&jmean_(m,k,j,i), wmu.d_view(a) * I);
+      });
+    }
+
+    // ---- Kernel B: finalize cells whose LAST octant arrived at this plane (center-out) ----
+    int hh = h;
+    int ndim_ = ndim;
+    Real plane_max = 0.0;
+    Kokkos::parallel_reduce("gs_updateB", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(const int idx, Real &lmax) {
+      int m = idx / (nx3a*nx2a*nx1a);
+      int kji = idx - m*(nx3a*nx2a*nx1a);
+      int k = kji / (nx2a*nx1a);
+      int ji = kji - k*(nx2a*nx1a);
+      int j = ji / nx1a;
+      int i = ji - j*nx1a + is;
+      j += js;
+      k += ks;
+      int hl = (i-is > ie-i) ? (i-is) : (ie-i);
+      if (ndim_ >= 2) hl += (j-js > je-j) ? (j-js) : (je-j);
+      if (ndim_ == 3) hl += (k-ks > ke-k) ? (k-ks) : (ke-k);
+      if (hl != hh) return;
+      Real epsi = eps_(m,k,j,i);
+      Real S = srad_(m,0,k,j,i);
+      Real J = jmean_(m,k,j,i);
+      Real B = planck_(m,k,j,i);
+      Real lam = lam_(m,k,j,i);
+      Real denom = 1.0 - (1.0 - epsi) * lam;
+      if (fabs(denom) < 1.0e-14) denom = (denom >= 0.0) ? 1.0e-14 : -1.0e-14;
+      Real Snew = (1.0 - epsi) * J + epsi * B;
+      Real dS = (Snew - S) / denom;
+      Real r = (fabs(S) > 0.0) ? fabs(dS / S) : fabs(dS);
+      if (r != r) r = 1.0e300;
+      srad_(m,0,k,j,i) = S + omega * dS;
+      lmax = fmax(lmax, r);
+    }, Kokkos::Max<Real>(plane_max));
+    gmax = fmax(gmax, plane_max);
+  }
+
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &gmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+#endif
+  max_dS_rel = gmax;
+}
+
 }  // namespace nr_radiation

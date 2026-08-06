@@ -83,6 +83,7 @@ class SC {
   Real iter_tol;     // LTE residual: max|ΔJ/J|
   Real ali_tol;      // ALI residual: max|ΔS/S| (Eq. 25)
   Real ali_omega;    // ALI over-relaxation (JOR/SOR) factor; 1.0 ≡ standard Jacobi-ALI (TF95 Eq. 25)
+  std::string ali_mode;  // "jacobi" (default) | "gauss_seidel" (center-out fused GS, wavefront only)
   int last_niter;    // diagnostic: number of iterations used in the most recent solve
   Real last_max_rel; // diagnostic: final residual from most recent solve
   bool cnv_flag;     // true if last SolveTransfer converged
@@ -160,6 +161,12 @@ class SC {
   void CalculateMoments();
   void ComputeQrad();
   void UpdateSourceALI(Real &max_dS_rel);
+
+  //! Center-out Gauss-Seidel-ALI: fused wavefront sweep that accumulates J in-sweep and
+  //! updates S per completion shell in place (+ local scatter). Replaces the
+  //! FormalSolution+ComputeJ+UpdateSourceALI trio when ali_mode=="gauss_seidel". Wavefront only.
+  //! Returns max|ΔS/S| (from the unrelaxed ΔS), like UpdateSourceALI. (sc/formal_solution.cpp)
+  void SweepUpdateGS(Real &max_dS_rel);
 
   // formal solution driver (sc/formal_solution.cpp)
   void FormalSolution();

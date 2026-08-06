@@ -245,9 +245,13 @@ void ProblemGenerator::SCAtmosphere(ParameterInput *pin, const bool restart) {
   int niter = 0;
   for (niter = 0; niter < maxit; ++niter) {
     psc->ExchangeBoundariesSync();
-    psc->FormalSolution();
-    psc->ComputeJ();
-    psc->UpdateSourceALI(max_rel);
+    if (psc->ali_mode == "gauss_seidel") {
+      psc->SweepUpdateGS(max_rel);  // fused center-out GS (formal solve + J + S-update)
+    } else {
+      psc->FormalSolution();
+      psc->ComputeJ();
+      psc->UpdateSourceALI(max_rel);
+    }
     if (niter + 1 >= psc->itermin && max_rel <= psc->ali_tol) break;
   }
   Kokkos::fence();

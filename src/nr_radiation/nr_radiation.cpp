@@ -85,6 +85,25 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
       << " (over-relaxation is unstable for omega>=2, non-advancing for omega<=0)" << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  // ALI update ordering (Phase I2). "jacobi" (default): one full formal solve -> global J ->
+  // update all S (standard hyperplane Jacobi-ALI, bit-identical to before). "gauss_seidel":
+  // center-out fused sweep — J accumulated in-sweep, S updated per completion shell in place,
+  // with a local (immediate-neighbour) scatter (Davis 2012 §3.4 / TF95; Option B, validated in
+  // iteration/prototype/). GS needs the wavefront host-plane ordering.
+  ali_mode = pin->GetOrAddString("nr_radiation", "ali_mode", "jacobi");
+  if (ali_mode != "jacobi" && ali_mode != "gauss_seidel") {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/ali_mode = '" << ali_mode << "' is not recognised; "
+      << "valid values are 'jacobi', 'gauss_seidel'" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (ali_mode == "gauss_seidel" && sweep_method != "wavefront") {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/ali_mode=gauss_seidel requires sweep=wavefront "
+      << "(the center-out GS uses the wavefront host-plane ordering); got sweep='"
+      << sweep_method << "'" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
   last_niter = 0;
   last_max_rel = 0.0;
   cnv_flag = false;
