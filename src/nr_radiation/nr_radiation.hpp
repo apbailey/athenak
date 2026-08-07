@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "athena.hpp"
 #include "parameter_input.hpp"
@@ -126,6 +127,18 @@ class SC {
   // ir_prev) only on first use with gs_scatter==true; empty (size 0) otherwise.
   DvceArray4D<Real> cpl_xp, cpl_xm, cpl_yp, cpl_ym, cpl_zp, cpl_zm;
 
+  // Compact wavefront plane index map (bit-identical throughput opt; sc/formal_solution.cpp).
+  // The set of interior cells on hyperplane h (li1+li2+li3==h, li = distance from the upwind
+  // corner) is a STATIC function of the meshblock interior dims only — identical for every
+  // meshblock and every octant — so it is precomputed ONCE (lazily, like ir_prev) and reused
+  // every sweep. wf_cell_ holds the plane-ordered packed linear interior index
+  // lin=(li3*nx2+li2)*nx1+li1; wf_plane_start_[h] is where plane h begins (plane h ==
+  // [start[h],start[h+1])). Lets the 2D/3D wavefront launch EXACTLY the plane's cells instead of
+  // an nx1(*nx2)-shaped grid that early-returns off-plane slots (the ~1/2 in 2D, ~1/3 in 3D warp
+  // over-issue). Empty (size 0) until BuildWavefrontIndex() runs; 1D is already compact (unused).
+  DvceArray1D<int> wf_cell_;
+  std::vector<int> wf_plane_start_;
+
   // inflow intensity table (nang_tot, 6 faces): default 0 = vacuum edges
   DualArray2D<Real> i_in;
 
@@ -192,6 +205,10 @@ class SC {
   void FormalSolutionWavefront();
   void FormalSolutionDiagonal();
   void FormalSolutionJacobi();
+
+  //! Precompute the compact per-hyperplane cell-index map used by the 2D/3D wavefront sweep
+  //! (fills wf_cell_ / wf_plane_start_). Static in the meshblock interior dims, so built once.
+  void BuildWavefrontIndex();
 
  private:
   MeshBlockPack* pmy_pack;

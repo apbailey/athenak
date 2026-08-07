@@ -37,6 +37,49 @@ void SC::FormalSolution() {
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn void SC::BuildWavefrontIndex
+//! \brief Precompute the compact per-hyperplane cell list for the 2D/3D wavefront sweep.
+//! For each plane h (li1+li2+li3==h, li = distance from the upwind corner along each axis) we
+//! enumerate exactly the interior cells that lie on it and store their packed linear index
+//! lin=(li3*nx2+li2)*nx1+li1, grouped by plane via wf_plane_start_. This is a pure function of
+//! the meshblock interior dims (identical for every meshblock and octant — the octant sign only
+//! flips i=is+li1 vs ie-li1 in the kernel), so it is built once. Within a plane the cells are
+//! causally independent (every footpoint sits on a strictly lower plane h-1..h-3, and the sweep
+//! only writes ir while reading upwind ir + fixed srad/chi), so any ordering yields bit-identical
+//! results; we iterate (li3 outer, li2 inner) for some transverse locality. Σ_h count == nx1·nx2·nx3.
+
+void SC::BuildWavefrontIndex() {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  int ndim = pang->ndim;
+  int n2 = (ndim >= 2) ? nx2 : 1;
+  int n3 = (ndim == 3) ? nx3 : 1;
+  int ncells = nx1 * n2 * n3;
+  int hmax;
+  if (ndim == 1) hmax = nx1 - 1;
+  else if (ndim == 2) hmax = nx1 + nx2 - 2;
+  else hmax = nx1 + nx2 + nx3 - 3;
+
+  HostArray1D<int> h_cell("wf_cell_host", ncells);
+  wf_plane_start_.assign(hmax + 2, 0);
+  int idx = 0;
+  for (int h = 0; h <= hmax; ++h) {
+    wf_plane_start_[h] = idx;
+    for (int li3 = 0; li3 < n3; ++li3) {
+      for (int li2 = 0; li2 < n2; ++li2) {
+        int li1 = h - li2 - li3;
+        if (li1 < 0 || li1 >= nx1) continue;
+        h_cell(idx++) = (li3 * nx2 + li2) * nx1 + li1;   // packed linear interior index
+      }
+    }
+  }
+  wf_plane_start_[hmax + 1] = idx;   // == ncells
+
+  Kokkos::realloc(wf_cell_, ncells);
+  Kokkos::deep_copy(wf_cell_, h_cell);
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void SC::FormalSolutionWavefront
 
 void SC::FormalSolutionWavefront() {
@@ -80,12 +123,19 @@ void SC::FormalSolutionWavefront() {
       });
     }
   } else if (ndim == 2) {
+    if (wf_cell_.size() == 0) BuildWavefrontIndex();
+    auto wfc_ = wf_cell_;
+    int nx1_ = nx1;
     int hmax = nx1 + nx2 - 2;
     for (int h = 0; h <= hmax; ++h) {
-      par_for("sc_sweep2d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (nx1-1),
-      KOKKOS_LAMBDA(int m, int angg, int li1) {
-        int li2 = h - li1;
-        if (li2 < 0 || li2 > nx2-1) return;
+      int lo = wf_plane_start_[h];
+      int cnt = wf_plane_start_[h+1] - lo;   // exact cell count on plane h (no off-plane slots)
+      if (cnt <= 0) continue;
+      par_for("sc_sweep2d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, cnt-1,
+      KOKKOS_LAMBDA(int m, int angg, int c) {
+        int lin = wfc_(lo + c);
+        int li2 = lin / nx1_;
+        int li1 = lin - li2*nx1_;
         int oct = angg / nang;
         int a = angg - oct*nang;
         Real mux = mu.d_view(oct,a,0);
@@ -108,12 +158,22 @@ void SC::FormalSolutionWavefront() {
       });
     }
   } else {
+    if (wf_cell_.size() == 0) BuildWavefrontIndex();
+    auto wfc_ = wf_cell_;
+    int nx1_ = nx1;
+    int nx12 = nx1*nx2;
     int hmax = nx1 + nx2 + nx3 - 3;
     for (int h = 0; h <= hmax; ++h) {
-      par_for("sc_sweep3d", DevExeSpace(), 0, nmb1, 0, nangt1, 0,(nx1-1), 0,(nx2-1),
-      KOKKOS_LAMBDA(int m, int angg, int li1, int li2) {
-        int li3 = h - li1 - li2;
-        if (li3 < 0 || li3 > nx3-1) return;
+      int lo = wf_plane_start_[h];
+      int cnt = wf_plane_start_[h+1] - lo;   // exact cell count on plane h (no off-plane slots)
+      if (cnt <= 0) continue;
+      par_for("sc_sweep3d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, cnt-1,
+      KOKKOS_LAMBDA(int m, int angg, int c) {
+        int lin = wfc_(lo + c);
+        int li3 = lin / nx12;
+        int r = lin - li3*nx12;
+        int li2 = r / nx1_;
+        int li1 = r - li2*nx1_;
         int oct = angg / nang;
         int a = angg - oct*nang;
         Real mux = mu.d_view(oct,a,0);
