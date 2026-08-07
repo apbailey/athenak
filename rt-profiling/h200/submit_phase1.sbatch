@@ -16,7 +16,8 @@
 #   cmake3 -S . -B build_h200 -D Kokkos_ENABLE_CUDA=ON -D Kokkos_ARCH_HOPPER90=ON \
 #          -D Athena_ENABLE_MPI=ON -D CMAKE_CXX_COMPILER=$PWD/kokkos/bin/nvcc_wrapper && cmake3 --build build_h200 -j12
 
-ATHENAK=${ATHENAK:-/home/cfairbairn/Projects/AIthenaRT/athenak}
+# worktree root: honor an explicit $ATHENAK, else the sbatch submit dir, else the rt-sc worktree
+ATHENAK=${ATHENAK:-${SLURM_SUBMIT_DIR:-/home/cfairbairn/Projects/AIthenaRT/athenak-rtsc}}
 DEVICE=h200
 BUILD="$ATHENAK/build_$DEVICE"
 

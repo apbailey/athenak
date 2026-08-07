@@ -16,7 +16,8 @@
 # A larger N* than the A100 means more block rungs and a longer job -- split by nmu if needed
 # (RT_NMU_MAX=4 then a 5-6 job).
 
-ATHENAK=${ATHENAK:-/home/cfairbairn/Projects/AIthenaRT/athenak}
+# worktree root: honor an explicit $ATHENAK, else the sbatch submit dir, else the rt-sc worktree
+ATHENAK=${ATHENAK:-${SLURM_SUBMIT_DIR:-/home/cfairbairn/Projects/AIthenaRT/athenak-rtsc}}
 DEVICE=h200
 BUILD="$ATHENAK/build_$DEVICE"
 

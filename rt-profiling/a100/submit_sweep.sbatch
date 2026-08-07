@@ -17,7 +17,8 @@
 #   RT_N_STAR=176 RT_SWEEPS=diagonal  sbatch rt-profiling/a100/submit_sweep.sbatch
 # (If a job nears the wall, split nmu too: RT_NMU_MAX=4 then a second job for 5-6.)
 
-ATHENAK=${ATHENAK:-/home/cfairbairn/Projects/AIthenaRT/athenak}
+# worktree root: honor an explicit $ATHENAK, else the sbatch submit dir, else the rt-sc worktree
+ATHENAK=${ATHENAK:-${SLURM_SUBMIT_DIR:-/home/cfairbairn/Projects/AIthenaRT/athenak-rtsc}}
 DEVICE=a100
 BUILD="$ATHENAK/build_$DEVICE"
 
