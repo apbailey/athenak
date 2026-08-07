@@ -318,7 +318,53 @@ void SC::FormalSolutionJacobi() {
 //! via the Eq. 24 update S ← S + ω·ΔS IN PLACE, so downstream planes read the fresh S. Returns
 //! max|ΔS/S| (from the UNRELAXED ΔS, like UpdateSourceALI). Wavefront (center-out) ordering only;
 //! replaces FormalSolution+ComputeJ+UpdateSourceALI on the ali_mode=="gauss_seidel" path. The
-//! ali_mode=="jacobi" path is untouched and bit-identical. (Local scatter: see below / Option 2.)
+//! ali_mode=="jacobi" path is untouched and bit-identical.
+//!
+//! Local scatter (gs_scatter; Option B's essential ≥2D increment, iteration/prototype/REPORT.md
+//! "Consequence for Phase 2"). When a cell i finalizes with ΔS, Kernel B additionally scatters
+//! ΔS into the mean intensity of each immediate Cartesian neighbour that has ALREADY had (some
+//! of) its rays computed this sweep but has NOT itself finalized yet — the "psiint" idea (Olson &
+//! Kunasz 1987; TF95 §2): a stale (old-S-based) contribution already sitting in that neighbour's
+//! jmean is corrected forward by the same ΔS. Per axis direction the correction coefficient is
+//! cpl_{axis}{p,m}(i) = Σ_{rays with that sign along that axis} w·(a0+e^{-Δτ}·a1)·(lmin/l_axis)
+//! accumulated in Kernel A alongside lamstr (Eq. 24's Λ*); a1 is this cell's own local-source
+//! weight and (a0+e^{-Δτ}·a1) is the one-step sensitivity of a downstream cell's intensity to
+//! this cell's S (direct footprint term a0, plus the indirect term through the already-computed
+//! upwind intensity that itself depends on this cell's S via a1). The GEOMETRIC weight lmin/l_axis
+//! (l_axis = dx_axis/|mu_axis|, lmin = min over axes) is exactly sc_interp.hpp's own transverse
+//! bilinear blend fraction (am_r/bm): a single 3D short-characteristic deposits its coupling as a
+//! bilinear blend over the neighbours, FULL weight (=1) on the ray's dominant/shortest-path axis
+//! and a FRACTIONAL weight (<1) on each of the two subordinate axes. Applying that same fraction
+//! here spreads each ray's coupling across the axes exactly as the formal solver spreads its
+//! footpoint stencil. gs_scatter_mode controls the ABSOLUTE scale: "normalized" (default) rescales
+//! the three axis shares to sum to exactly c (the footpoint row-sum, correct GS, always stable);
+//! "geometric" leaves them summing to c*(1+am_r+bm), an implicit over-relaxation that diverges in
+//! isotropic 3D (see gs-scatter-3d-origin.md and nr_radiation.cpp's gs_scatter_mode comment).
+//! AthenaK's two remaining departures from the exact form (still Q006-safe):
+//!   (1) The coupling is evaluated at the FINALIZING cell i, not at the neighbour (whose exact
+//!       a0/e^{-Δτ} would require re-deriving its own opacity stencil): a zeroth-order,
+//!       locally-uniform-medium stand-in, exact in a homogeneous medium (matching the 1D/2D
+//!       testbed, which used a single per-ray triple for exactly this reason).
+//!   (2) The gate is "neighbour not yet finalized" (hl(neighbour) > h) rather than a genuine
+//!       per-ray "already arrived" test (AthenaK's lockstep multi-octant Kernel A does not track
+//!       per-ray arrival without extra storage). This can, for a bounded subset of octants/cells,
+//!       apply the correction slightly before that specific ray has actually deposited at the
+//!       neighbour — a bounded, self-limiting over-count (proportional to the already-small ΔS),
+//!       not an unbounded error.
+//! Neither departure changes the converged fixed point: at convergence ΔS→0 so the scatter
+//! vanishes and S=(1-ε)Λ[S]+εB holds exactly regardless (Q006, design doc §6) — both are pure
+//! *rate* approximations. Off by default (gs_scatter=false ⇒ bit-identical to the in-place-only
+//! GS already shipped); opt in via <nr_radiation>/gs_scatter=true.
+//!
+//! Validated (2026-08, sc_atmosphere, Davis Eq. 30), gs_scatter_mode=normalized: 1D 300->204 iters
+//! (single axis so W_x==1 either mode); 2D 342->248; 3D anisotropic 32x8x8 144->68; 3D ISOTROPIC
+//! 8^3/16^3 converge (47/58) where the "geometric" mode diverges to NaN; thick isotropic
+//! chi=100/200 converge in 10/2 iters; converged J/S match the scatter-off run (Q006). The old
+//! "geometric fixes 3D" result held only on anisotropic grids (quasi-1D); normalized is what makes
+//! genuine isotropic 3D stable at ali_omega=1. On stable problems the geometric mode's extra speed
+//! is recoverable, under control, as normalized + ali_omega>1 (verified: normalized+omega=1.2 ==
+//! geometric's 48 iters on the anisotropic 3D atmosphere). Full derivation + evidence:
+//! iteration/gs-scatter-3d-origin.md.
 
 void SC::SweepUpdateGS(Real &max_dS_rel) {
   Kokkos::deep_copy(DevExeSpace(), jmean, 0.0);
@@ -344,6 +390,47 @@ void SC::SweepUpdateGS(Real &max_dS_rel) {
   auto eps_ = eps;
   auto planck_ = planck;
   Real omega = ali_omega;
+  bool do_scatter = gs_scatter;
+  // Experimental (3D interrogation): renormalise the per-axis coupling so the three axis shares
+  // sum to exactly c per ray (the footpoint-identity row-sum), instead of c·(1+am_r+bm). See
+  // iteration/gs-scatter-3d-origin.md. do_norm=false ⇒ the shipped "geometric" weighting.
+  bool do_norm = (gs_scatter_mode == "normalized");
+
+  // Local-scatter coupling arrays: lazily allocated (like ir_prev for sweep=jacobi), only the
+  // ones needed for ndim, only when gs_scatter is requested. Zeroed every call, like jmean/lamstr.
+  if (do_scatter) {
+    if (cpl_xp.size() == 0) {
+      Kokkos::realloc(cpl_xp, jmean.extent_int(0), jmean.extent_int(1),
+                      jmean.extent_int(2), jmean.extent_int(3));
+      Kokkos::realloc(cpl_xm, jmean.extent_int(0), jmean.extent_int(1),
+                      jmean.extent_int(2), jmean.extent_int(3));
+      if (ndim >= 2) {
+        Kokkos::realloc(cpl_yp, jmean.extent_int(0), jmean.extent_int(1),
+                        jmean.extent_int(2), jmean.extent_int(3));
+        Kokkos::realloc(cpl_ym, jmean.extent_int(0), jmean.extent_int(1),
+                        jmean.extent_int(2), jmean.extent_int(3));
+      }
+      if (ndim == 3) {
+        Kokkos::realloc(cpl_zp, jmean.extent_int(0), jmean.extent_int(1),
+                        jmean.extent_int(2), jmean.extent_int(3));
+        Kokkos::realloc(cpl_zm, jmean.extent_int(0), jmean.extent_int(1),
+                        jmean.extent_int(2), jmean.extent_int(3));
+      }
+    }
+    Kokkos::deep_copy(DevExeSpace(), cpl_xp, 0.0);
+    Kokkos::deep_copy(DevExeSpace(), cpl_xm, 0.0);
+    if (ndim >= 2) {
+      Kokkos::deep_copy(DevExeSpace(), cpl_yp, 0.0);
+      Kokkos::deep_copy(DevExeSpace(), cpl_ym, 0.0);
+    }
+    if (ndim == 3) {
+      Kokkos::deep_copy(DevExeSpace(), cpl_zp, 0.0);
+      Kokkos::deep_copy(DevExeSpace(), cpl_zm, 0.0);
+    }
+  }
+  auto cxp_ = cpl_xp; auto cxm_ = cpl_xm;
+  auto cyp_ = cpl_yp; auto cym_ = cpl_ym;
+  auto czp_ = cpl_zp; auto czm_ = cpl_zm;
 
   int hmax;
   if (ndim == 1) hmax = nx1 - 1;
@@ -365,12 +452,19 @@ void SC::SweepUpdateGS(Real &max_dS_rel) {
         int sx = (mux > 0.0) ? 1 : -1;
         int i = (sx > 0) ? (is + h) : (ie - h);
         Real dx1v = mbsize.d_view(m).dx1;
-        Real a1 = 0.0;
+        Real a1 = 0.0, a0 = 0.0, edtau = 0.0;
         Real I = UpdateCellSC(chi_,srad_,ir_,m,angg, i,js,ks, sx,0,0,
-                              mux,0.0,0.0, dx1v,0.0,0.0, ndim,ks,js, &a1);
+                              mux,0.0,0.0, dx1v,0.0,0.0, ndim,ks,js, &a1, &a0, &edtau);
         ir_(m,angg,ks,js,i) = I;
-        Kokkos::atomic_add(&lam_(m,ks,js,i), wmu.d_view(a) * a1);
-        Kokkos::atomic_add(&jmean_(m,ks,js,i), wmu.d_view(a) * I);
+        Real w = wmu.d_view(a);
+        Kokkos::atomic_add(&lam_(m,ks,js,i), w * a1);
+        Kokkos::atomic_add(&jmean_(m,ks,js,i), w * I);
+        if (do_scatter) {
+          // 1D: x is the only (hence dominant) axis, so the geometric weight lmin/lx is exactly 1.
+          Real c = w * (a0 + edtau * a1);
+          if (sx > 0) { Kokkos::atomic_add(&cxp_(m,ks,js,i), c); }
+          else        { Kokkos::atomic_add(&cxm_(m,ks,js,i), c); }
+        }
       });
     } else if (ndim == 2) {
       par_for("gs_sweepA2d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (nx1-1),
@@ -387,12 +481,29 @@ void SC::SweepUpdateGS(Real &max_dS_rel) {
         int j = (sy > 0) ? (js + li2) : (je - li2);
         Real dx1v = mbsize.d_view(m).dx1;
         Real dx2v = mbsize.d_view(m).dx2;
-        Real a1 = 0.0;
+        Real a1 = 0.0, a0 = 0.0, edtau = 0.0;
         Real I = UpdateCellSC(chi_,srad_,ir_,m,angg, i,j,ks, sx,sy,0,
-                              mux,muy,0.0, dx1v,dx2v,0.0, ndim,ks,js, &a1);
+                              mux,muy,0.0, dx1v,dx2v,0.0, ndim,ks,js, &a1, &a0, &edtau);
         ir_(m,angg,ks,j,i) = I;
-        Kokkos::atomic_add(&lam_(m,ks,j,i), wmu.d_view(a) * a1);
-        Kokkos::atomic_add(&jmean_(m,ks,j,i), wmu.d_view(a) * I);
+        Real w = wmu.d_view(a);
+        Kokkos::atomic_add(&lam_(m,ks,j,i), w * a1);
+        Kokkos::atomic_add(&jmean_(m,ks,j,i), w * I);
+        if (do_scatter) {
+          Real c = w * (a0 + edtau * a1);
+          // Geometric (exact fractional) weighting: split the diagonal coupling onto the two
+          // axis-aligned neighbours by the path-length ratio lmin/l_axis (l_axis = dx_axis/|mu|,
+          // exactly sc_interp.hpp's am/bm blend weights). The ray's dominant (shortest-path) axis
+          // gets full weight 1; the subordinate axis gets lmin/l_axis < 1.
+          Real lx = dx1v/fabs(mux), ly = dx2v/fabs(muy);
+          Real lmin = fmin(lx,ly);
+          Real wx = lmin/lx, wy = lmin/ly;
+          if (do_norm) { Real s = wx + wy; wx /= s; wy /= s; }
+          Real cx = c*wx, cy = c*wy;
+          if (sx > 0) { Kokkos::atomic_add(&cxp_(m,ks,j,i), cx); }
+          else        { Kokkos::atomic_add(&cxm_(m,ks,j,i), cx); }
+          if (sy > 0) { Kokkos::atomic_add(&cyp_(m,ks,j,i), cy); }
+          else        { Kokkos::atomic_add(&cym_(m,ks,j,i), cy); }
+        }
       });
     } else {
       par_for("gs_sweepA3d", DevExeSpace(), 0, nmb1, 0, nangt1, 0,(nx1-1), 0,(nx2-1),
@@ -413,12 +524,33 @@ void SC::SweepUpdateGS(Real &max_dS_rel) {
         Real dx1v = mbsize.d_view(m).dx1;
         Real dx2v = mbsize.d_view(m).dx2;
         Real dx3v = mbsize.d_view(m).dx3;
-        Real a1 = 0.0;
+        Real a1 = 0.0, a0 = 0.0, edtau = 0.0;
         Real I = UpdateCellSC(chi_,srad_,ir_,m,angg, i,j,k, sx,sy,sz,
-                              mux,muy,muz, dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+                              mux,muy,muz, dx1v,dx2v,dx3v, ndim,ks,js, &a1, &a0, &edtau);
         ir_(m,angg,k,j,i) = I;
-        Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
-        Kokkos::atomic_add(&jmean_(m,k,j,i), wmu.d_view(a) * I);
+        Real w = wmu.d_view(a);
+        Kokkos::atomic_add(&lam_(m,k,j,i), w * a1);
+        Kokkos::atomic_add(&jmean_(m,k,j,i), w * I);
+        if (do_scatter) {
+          Real c = w * (a0 + edtau * a1);
+          // Geometric (exact fractional) weighting: split the diagonal coupling onto the three
+          // axis-aligned neighbours by the path-length ratio lmin/l_axis (l_axis = dx_axis/|mu|,
+          // exactly sc_interp.hpp's am_r/bm blend weights). The ray's dominant (shortest-path)
+          // axis gets full weight 1; the two subordinate axes get lmin/l_axis < 1. The earlier
+          // rule gave full weight to all 3 axes, over-counting the two subordinate ones and
+          // pushing the 3D GS spectral radius past 1 (diverged to NaN — design doc §7).
+          Real lx = dx1v/fabs(mux), ly = dx2v/fabs(muy), lz = dx3v/fabs(muz);
+          Real lmin = fmin(fmin(lx,ly),lz);
+          Real wx = lmin/lx, wy = lmin/ly, wz = lmin/lz;
+          if (do_norm) { Real s = wx + wy + wz; wx /= s; wy /= s; wz /= s; }
+          Real cx = c*wx, cy = c*wy, cz = c*wz;
+          if (sx > 0) { Kokkos::atomic_add(&cxp_(m,k,j,i), cx); }
+          else        { Kokkos::atomic_add(&cxm_(m,k,j,i), cx); }
+          if (sy > 0) { Kokkos::atomic_add(&cyp_(m,k,j,i), cy); }
+          else        { Kokkos::atomic_add(&cym_(m,k,j,i), cy); }
+          if (sz > 0) { Kokkos::atomic_add(&czp_(m,k,j,i), cz); }
+          else        { Kokkos::atomic_add(&czm_(m,k,j,i), cz); }
+        }
       });
     }
 
@@ -451,8 +583,42 @@ void SC::SweepUpdateGS(Real &max_dS_rel) {
       Real dS = (Snew - S) / denom;
       Real r = (fabs(S) > 0.0) ? fabs(dS / S) : fabs(dS);
       if (r != r) r = 1.0e300;
-      srad_(m,0,k,j,i) = S + omega * dS;
+      Real dS_app = omega * dS;
+      srad_(m,0,k,j,i) = S + dS_app;
       lmax = fmax(lmax, r);
+
+      if (do_scatter) {
+        // hl of an arbitrary cell (ii,jj,kk), same formula as above — used to test whether a
+        // neighbour has already finalized (hl(neighbour) <= hh) or is still pending (> hh).
+        auto hl_of = [&](int ii, int jj, int kk) {
+          int v = (ii-is > ie-ii) ? (ii-is) : (ie-ii);
+          if (ndim_ >= 2) v += (jj-js > je-jj) ? (jj-js) : (je-jj);
+          if (ndim_ == 3) v += (kk-ks > ke-kk) ? (kk-ks) : (ke-kk);
+          return v;
+        };
+        if (i+1 <= ie && hl_of(i+1,j,k) > hh) {
+          Kokkos::atomic_add(&jmean_(m,k,j,i+1), cxp_(m,k,j,i) * dS_app);
+        }
+        if (i-1 >= is && hl_of(i-1,j,k) > hh) {
+          Kokkos::atomic_add(&jmean_(m,k,j,i-1), cxm_(m,k,j,i) * dS_app);
+        }
+        if (ndim_ >= 2) {
+          if (j+1 <= je && hl_of(i,j+1,k) > hh) {
+            Kokkos::atomic_add(&jmean_(m,k,j+1,i), cyp_(m,k,j,i) * dS_app);
+          }
+          if (j-1 >= js && hl_of(i,j-1,k) > hh) {
+            Kokkos::atomic_add(&jmean_(m,k,j-1,i), cym_(m,k,j,i) * dS_app);
+          }
+        }
+        if (ndim_ == 3) {
+          if (k+1 <= ke && hl_of(i,j,k+1) > hh) {
+            Kokkos::atomic_add(&jmean_(m,k+1,j,i), czp_(m,k,j,i) * dS_app);
+          }
+          if (k-1 >= ks && hl_of(i,j,k-1) > hh) {
+            Kokkos::atomic_add(&jmean_(m,k-1,j,i), czm_(m,k,j,i) * dS_app);
+          }
+        }
+      }
     }, Kokkos::Max<Real>(plane_max));
     gmax = fmax(gmax, plane_max);
   }

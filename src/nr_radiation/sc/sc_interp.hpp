@@ -110,6 +110,13 @@ void InterpQuadSourceSlopeLim(Real dtaum, Real dtaup, Real S0, Real S1, Real S2,
 //!   ndim       — 1, 2 or 3
 //!   ks, js     — start-of-active-zone indices for k, j
 //!   a1_out     — if non-null, returns Ψ⁰ (local-source weight) for Λ* accumulation
+//!   a0_out, edtau_out — if non-null, also return a0 and e^{-Δτ} (Eq. 20). Together with
+//!     a1_out these give the local-scatter coupling coefficient w·(a0+e^{-Δτ}·a1) used by the
+//!     Gauss-Seidel "psiint" correction (Olson & Kunasz 1987; TF95; SweepUpdateGS in
+//!     formal_solution.cpp) — the sensitivity of a downstream cell's intensity on this ray to a
+//!     change in *this* cell's S, evaluated here as a zeroth-order (same-cell) stand-in for the
+//!     downstream cell's own coefficients (exact only for a locally-uniform medium; see
+//!     SweepUpdateGS's doc comment for the approximation this implies).
 
 KOKKOS_INLINE_FUNCTION
 Real UpdateCellSC(
@@ -120,7 +127,7 @@ Real UpdateCellSC(
     Real mux, Real muy, Real muz,
     Real dx1, Real dx2, Real dx3,
     int ndim, int ks, int js,
-    Real *a1_out) {
+    Real *a1_out, Real *a0_out = nullptr, Real *edtau_out = nullptr) {
   int im = i - sx, ip = i + sx;
   Real chi1 = chi_(m,k,j,i);
   Real S1   = srad_(m,0,k,j,i);
@@ -219,6 +226,8 @@ Real UpdateCellSC(
   Real edtau, a0, a1, a2;
   InterpQuadSourceSlopeLim(dtaum, dtaup, S0, S1, S2, &edtau, &a0, &a1, &a2);
   if (a1_out != nullptr) { *a1_out = a1; }
+  if (a0_out != nullptr) { *a0_out = a0; }
+  if (edtau_out != nullptr) { *edtau_out = edtau; }
   return a0*S0 + a1*S1 + a2*S2 + edtau*imu0;
 }
 

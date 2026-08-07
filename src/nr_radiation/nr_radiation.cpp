@@ -14,6 +14,7 @@
 #include <string>
 
 #include "athena.hpp"
+#include "globals.hpp"
 #include "parameter_input.hpp"
 #include "mesh/mesh.hpp"
 #include "coordinates/coordinates.hpp"
@@ -104,6 +105,17 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
       << sweep_method << "'" << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  // GS local-scatter acceleration (Phase I2, Option B; iteration/prototype/REPORT.md). Only
+  // read inside SweepUpdateGS — a no-op unless ali_mode=="gauss_seidel". Default false
+  // reproduces the existing in-place-only GS (Option 1) bit-for-bit.
+  gs_scatter = pin->GetOrAddBoolean("nr_radiation", "gs_scatter", false);
+  gs_scatter_mode = pin->GetOrAddString("nr_radiation", "gs_scatter_mode", "normalized");
+  if (gs_scatter_mode != "geometric" && gs_scatter_mode != "normalized") {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/gs_scatter_mode = '" << gs_scatter_mode
+      << "' is not recognised; use 'geometric' or 'normalized'" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
   last_niter = 0;
   last_max_rel = 0.0;
   cnv_flag = false;
@@ -150,6 +162,30 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   int ndim = (pm->three_d) ? 3 : ((pm->two_d) ? 2 : 1);
   pang = new SCAngularGrid(ndim, nmu);
   nang_tot = pang->noct * pang->nang;
+
+  // gs_scatter's per-cell coupling (cpl_xp/xm/yp/ym/zp/zm) splits each ray's one-step coupling
+  // w·(a0+e^{-Δτ}a1) across the axis-aligned neighbours (formal_solution.cpp SweepUpdateGS Kernel
+  // A). Two decompositions are available via gs_scatter_mode:
+  //   "normalized" (DEFAULT): the three axis shares lmin/l_axis are renormalised to sum to
+  //     exactly the true one-step coupling c — the row-sum the short-characteristic footpoint
+  //     identity (Σ bilinear weights = 1) requires. This is the correct Gauss-Seidel off-diagonal
+  //     and is unconditionally stable at ali_omega=1 in every dimension (verified 1D/2D/3D incl.
+  //     isotropic thick atmospheres). See iteration/gs-scatter-3d-origin.md.
+  //   "geometric" (opt-in): the un-renormalised shares lmin/l_axis, total c·(1+am_r+bm). This
+  //     equals the normalized coupling times an implicit, uncontrolled over-relaxation factor
+  //     (1+am_r+bm) ∈ [1,3] — free speed when it happens to be stable (quasi-1D/2D and anisotropic
+  //     grids) but, in genuinely isotropic 3D, that factor reaches ~3 and pushes the GS spectral
+  //     radius past 1 → diverges to NaN at ali_omega=1. Use "normalized" + explicit ali_omega>1
+  //     (SOR) instead to get the same acceleration under control (verified: normalized+ω=1.2 ≡
+  //     geometric's iteration count on the anisotropic 3D atmosphere).
+  // Warn only for the opt-in over-relaxed mode in 3D (the default is safe):
+  if (gs_scatter && gs_scatter_mode == "geometric" && ndim == 3
+      && global_variable::my_rank == 0) {
+    std::cout << "### WARNING in " << __FILE__ << ": <nr_radiation>/gs_scatter_mode=geometric in "
+      << "3D is an implicitly over-relaxed coupling (factor up to ~3) that can diverge to NaN on "
+      << "isotropic scattering problems. Prefer gs_scatter_mode=normalized (default, stable) with "
+      << "ali_omega>1 for controlled SOR; see iteration/gs-scatter-3d-origin.md." << std::endl;
+  }
 
   // Array allocation ----------------------------------------------------------------
   int nmb = std::max((ppack->nmb_thispack), (ppack->pmesh->nmb_maxperrank));

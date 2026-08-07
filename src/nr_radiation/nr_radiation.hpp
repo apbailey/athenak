@@ -84,6 +84,15 @@ class SC {
   Real ali_tol;      // ALI residual: max|ΔS/S| (Eq. 25)
   Real ali_omega;    // ALI over-relaxation (JOR/SOR) factor; 1.0 ≡ standard Jacobi-ALI (TF95 Eq. 25)
   std::string ali_mode;  // "jacobi" (default) | "gauss_seidel" (center-out fused GS, wavefront only)
+  bool gs_scatter;   // GS local-scatter acceleration (design doc Option B); only read inside
+                     // SweepUpdateGS (no effect unless ali_mode=="gauss_seidel"). Default false
+                     // reproduces the in-place-only GS (Option 1) bit-for-bit; opt-in until
+                     // validated end-to-end in AthenaK (iteration/prototype/REPORT.md Phase 2).
+  std::string gs_scatter_mode;  // per-axis coupling decomposition (only when gs_scatter):
+                     // "geometric" (default; c·lmin/l_axis per axis, total c·(1+am_r+bm)) |
+                     // "normalized" (Fix B; the same three shares renormalised to total exactly c
+                     // — restores the operator row-sum the footpoint identity requires; see
+                     // iteration/gs-scatter-3d-origin.md). Experimental knob for the 3D interrogation.
   int last_niter;    // diagnostic: number of iterations used in the most recent solve
   Real last_max_rel; // diagnostic: final residual from most recent solve
   bool cnv_flag;     // true if last SolveTransfer converged
@@ -110,6 +119,12 @@ class SC {
   DvceArray4D<Real> sigma_s;  // scattering opacity κ_s ρ
   DvceArray4D<Real> eps;      // photon destruction probability
   DvceArray4D<Real> lamstr;   // diagonal Λ* = Σ w Ψ⁰
+
+  // GS local-scatter (Option B) coupling coefficients: cpl_Xp/cpl_Xm(cell) = Σ_{rays with
+  // sign +/- along axis X} w·(a0+e^{-Δτ}·a1), evaluated at THIS cell (see UpdateCellSC /
+  // SweepUpdateGS doc comments). One pair per active dimension. Lazily allocated (like
+  // ir_prev) only on first use with gs_scatter==true; empty (size 0) otherwise.
+  DvceArray4D<Real> cpl_xp, cpl_xm, cpl_yp, cpl_ym, cpl_zp, cpl_zm;
 
   // inflow intensity table (nang_tot, 6 faces): default 0 = vacuum edges
   DualArray2D<Real> i_in;
@@ -163,7 +178,8 @@ class SC {
   void UpdateSourceALI(Real &max_dS_rel);
 
   //! Center-out Gauss-Seidel-ALI: fused wavefront sweep that accumulates J in-sweep and
-  //! updates S per completion shell in place (+ local scatter). Replaces the
+  //! updates S per completion shell in place, optionally scattering ΔS into already-arrived
+  //! immediate neighbours' J (gs_scatter; design doc Option B). Replaces the
   //! FormalSolution+ComputeJ+UpdateSourceALI trio when ali_mode=="gauss_seidel". Wavefront only.
   //! Returns max|ΔS/S| (from the unrelaxed ΔS), like UpdateSourceALI. (sc/formal_solution.cpp)
   void SweepUpdateGS(Real &max_dS_rel);
