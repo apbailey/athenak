@@ -114,6 +114,30 @@ This reproduces the prior study's finding independently. ![crossover](a100/sweep
 ### 3.5 Slowdown vs angular resolution
 Slowdown grows steeply with rays (per-cell RT cost ≈ quadratic in nmu). ![slowdown](a100/slowdown_vs_rays.png)
 
+### 3.6 Caveat: the fenced per-kernel metric vs the clean whole-run cost (2026-08-10 follow-up)
+The per-kernel throughput column `rad_cells_per_s` (= zones·nlim / `t_rad`) is derived from the
+**perf-probe** run, which calls `Kokkos::fence()` after *every* matched kernel
+(`src/utils/perf.cpp` `KernelsProbe::OnEnd`) and counts only `sc_*`/`gs_*` kernels (**excludes radiation
+bvals**). Fencing fully exposes the per-launch bubble **526×/cycle at 176³ vs 46×/cycle at 16³**, so this
+metric *over-penalises many-launch (big-block) configs*: it falls ~34 % (2.83e7→1.86e7) from 16³→176³.
+
+The **clean whole-run** radiation cost (`t_on − t_off` from the unfenced runs; `affect_fluid=false` ⇒ the
+delta is the *total* radiation cost incl. bvals) is **U-shaped, not monotonic** (nmu=6):
+
+| block B | 16³ | 22³ | 44³ | 88³ | 176³ |
+|--:|--:|--:|--:|--:|--:|
+| clean radiation wall-time (s) | 15.0 | 13.6 | 12.7 | 12.85 | 15.2 |
+| clean rad throughput (cells/s) | 1.82e7 | 2.00e7 | 2.15e7 | 2.12e7 | 1.80e7 |
+
+The single 176³ block is ≈ the 16³ cost and only ~16–20 % above the 44–88³ optimum. A **fence-free nsys**
+follow-up (`a100/launch_overhead/SUMMARY.md`) then measured the sweep's true inter-plane launch/ramp gap:
+a ~fixed **~18–23 µs/plane**, giving a recoverable **gap_fraction of 3.9 % (176³), 2.3 % (88³), 0.5 %
+(16³)** at nmu=6 — i.e. the big-block penalty is **in-kernel latency**, not launch overhead. (It reaches
+12 % only for the non-production corner of nmu=3 on a single 176³ block, where kernels are both lean and
+maximally numerous.) **Practical takeaway:** compare sweeps on *whole-run* wall-time, not the fenced
+`rad_cells_per_s`; and a fused single-launch sweep ("Lever 1") is **not** worth building — the real
+targets are the latency-bound footpoint gather and the diagonal's big-block team starvation.
+
 ## 4. Real-time GPU loading & occupancy (live, no ncu)
 
 Every run was monitored live with `nvidia-smi dmon` (SM-util %, mem-util %, clock, power, temp) **and
