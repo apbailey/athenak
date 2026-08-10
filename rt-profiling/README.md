@@ -43,6 +43,8 @@ tighter successor to `logs/validation/gpu_perf_lte_2026-08/` in the AIthenaRT wo
 | `h200/submit_phase1.sbatch`, `h200/submit_sweep.sbatch` | Apollo H200 Slurm jobs |
 | `H200_COLLABORATOR.md` | full instructions to reproduce on a (different-memory) H200 |
 | `REPORT.md` | write-up of the A100 results (generated after the runs) |
+| `OPTIMIZATION_LEDGER.md` | **living record of sweep optimizations tested + ideas to try** (start here for "what's next") |
+| `launch_overhead/measure_nsys.py` | fence-free nsys launch-overhead (gap_fraction) probe for any sweep |
 | `<device>/results_*.csv`, `<device>/*.png` | data + figures |
 
 ## Reproduce (Apollo A100)
