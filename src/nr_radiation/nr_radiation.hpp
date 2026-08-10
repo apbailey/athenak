@@ -75,8 +75,13 @@ class SC {
   bool is_mhd_enabled;
   bool affect_fluid;   // apply Q_rad back onto the fluid energy equation
 
-  // sweep parallelization strategy: "wavefront" (default), "diagonal", or "jacobi"
+  // sweep parallelization strategy: "wavefront" (default), "diagonal", "diagonal_compact",
+  // or "jacobi"
   std::string sweep_method;
+  // sweep=diagonal_compact only: explicit TeamPolicy team size (0 = Kokkos::AUTO, the default).
+  // The diagonal kernel is latency-bound with few teams (nmb*nang_tot); a larger team hides more
+  // latency (capped by register-limited occupancy). Clamped to team_size_max at launch.
+  int diag_team_size;
 
   // iteration control
   int iter_max;
@@ -138,6 +143,11 @@ class SC {
   // over-issue). Empty (size 0) until BuildWavefrontIndex() runs; 1D is already compact (unused).
   DvceArray1D<int> wf_cell_;
   std::vector<int> wf_plane_start_;
+  // Device mirror of wf_plane_start_ (offsets where each plane begins). The wavefront reads the
+  // host std::vector between per-plane par_for launches, but sweep=diagonal_compact runs its h-loop
+  // INSIDE one device kernel and needs the offsets on device to slice wf_cell_ per plane. Built once
+  // alongside wf_cell_ in BuildWavefrontIndex(); empty until then.
+  DvceArray1D<int> wf_plane_start_dev_;
 
   // inflow intensity table (nang_tot, 6 faces): default 0 = vacuum edges
   DualArray2D<Real> i_in;

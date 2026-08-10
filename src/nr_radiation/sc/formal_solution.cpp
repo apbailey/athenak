@@ -27,7 +27,7 @@ void SC::FormalSolution() {
   if (use_ali) {
     Kokkos::deep_copy(DevExeSpace(), lamstr, 0.0);
   }
-  if (sweep_method == "diagonal") {
+  if (sweep_method == "diagonal" || sweep_method == "diagonal_compact") {
     FormalSolutionDiagonal();
   } else if (sweep_method == "jacobi") {
     FormalSolutionJacobi();
@@ -77,6 +77,14 @@ void SC::BuildWavefrontIndex() {
 
   Kokkos::realloc(wf_cell_, ncells);
   Kokkos::deep_copy(wf_cell_, h_cell);
+
+  // Device mirror of the plane-offset table, for sweep=diagonal_compact (its h-loop runs on device
+  // and must slice wf_cell_ per plane). Same one-time build; the host wavefront ignores it.
+  int nstart = hmax + 2;
+  HostArray1D<int> h_start("wf_plane_start_host", nstart);
+  for (int h = 0; h < nstart; ++h) { h_start(h) = wf_plane_start_[h]; }
+  Kokkos::realloc(wf_plane_start_dev_, nstart);
+  Kokkos::deep_copy(wf_plane_start_dev_, h_start);
 }
 
 //----------------------------------------------------------------------------------------
@@ -224,13 +232,28 @@ void SC::FormalSolutionDiagonal() {
   auto lam_ = lamstr;
   bool accumulate = use_ali;
 
+  // diagonal_compact: iterate ONLY the real interior cells per plane (reusing the wavefront's
+  // compact list) instead of an nx1*nx2 candidate box with off-plane early-returns (~2/3 waste in
+  // 3D). Bit-identical to "diagonal" (plane cells are causally independent; UpdateCellSC is a pure
+  // function of strictly-lower planes). Only the 3D branch is compacted (1D is already 1 cell/plane).
+  bool compact = (sweep_method == "diagonal_compact");
+  if (compact && wf_cell_.size() == 0) { BuildWavefrontIndex(); }
+  auto wfc_ = wf_cell_;
+  auto wps_ = wf_plane_start_dev_;
+  int nx12 = nx1 * nx2;
+
   int league_size = nmb * nang_tot_;
   int hmax;
   if (ndim == 1) hmax = nx1 - 1;
   else if (ndim == 2) hmax = nx1 + nx2 - 2;
   else hmax = nx1 + nx2 + nx3 - 3;
 
-  Kokkos::TeamPolicy<> policy(DevExeSpace(), league_size, Kokkos::AUTO);
+  // Team size: default Kokkos::AUTO; diagonal_compact may override via <nr_radiation>/diag_team_size
+  // (>0) to raise resident threads on this latency-bound, team-starved kernel. Values must be within
+  // the device/backend max (Kokkos errors otherwise); used only for the GPU A/B (AUTO on CPU).
+  Kokkos::TeamPolicy<> policy = (compact && diag_team_size > 0)
+      ? Kokkos::TeamPolicy<>(DevExeSpace(), league_size, diag_team_size)
+      : Kokkos::TeamPolicy<>(DevExeSpace(), league_size, Kokkos::AUTO);
   Kokkos::parallel_for("sc_sweep_diag", policy,
   KOKKOS_LAMBDA(const TeamMember_t &tmember) {
     int league_id = tmember.league_rank();
@@ -279,6 +302,30 @@ void SC::FormalSolutionDiagonal() {
           ir_(m,angg,ks,j,i) = I;
           if (accumulate) {
             Kokkos::atomic_add(&lam_(m,ks,j,i), w * a1);
+          }
+        });
+      } else if (compact) {
+        // compact: exactly the plane's real interior cells (wf_cell_[lo..lo+cnt)), no early-return.
+        int lo = wps_(h);
+        int cnt = wps_(h + 1) - lo;
+        Kokkos::parallel_for(Kokkos::TeamThreadRange(tmember, cnt),
+        [&](const int c) {
+          int lin = wfc_(lo + c);              // packed li: lin=(li3*nx2+li2)*nx1+li1 (matches build)
+          int li3 = lin / nx12;
+          int r = lin - li3 * nx12;
+          int li2 = r / nx1;
+          int li1 = r - li2 * nx1;
+          int i = (sx > 0) ? (is + li1) : (ie - li1);
+          int j = (sy > 0) ? (js + li2) : (je - li2);
+          int k = (sz > 0) ? (ks + li3) : (ke - li3);
+          Real a1 = 0.0;
+          Real I = UpdateCellSC(chi_,srad_,ir_,m,angg,
+                                i,j,k, sx,sy,sz,
+                                mux,muy,muz,
+                                dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+          ir_(m,angg,k,j,i) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,k,j,i), w * a1);
           }
         });
       } else {
