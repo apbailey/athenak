@@ -57,10 +57,18 @@ OUT = os.environ.get("RT_OUT", os.path.normpath(os.path.join(HERE, "..", DEVICE)
 LO_OUT = os.path.join(OUT, "launch_overhead")
 NLIM = int(os.environ.get("RT_NSYS_NLIM", "10"))
 SMOKE = os.environ.get("RT_SMOKE", "") == "1"
+# which sweep to profile (wavefront | diagonal | diagonal_compact | jacobi)
+SWEEP = os.environ.get("RT_NSYS_SWEEP", "wavefront")
 # default: fence-free sweep-kernel symbol. Without the Kokkos NVTX connector the par_for label
-# "sc_sweep3d" is absent; the demangled enclosing method "FormalSolutionWavefront" is present
-# (see handover/apollo-access.md). Match either.
-MATCH = re.compile(os.environ.get("RT_NSYS_MATCH", r"FormalSolutionWavefront|sc_sweep3d"))
+# is absent; the demangled enclosing method is present (see handover/apollo-access.md). Match
+# either; the default adapts to the sweep (diagonal/diagonal_compact share sc_sweep_diag).
+_DEFAULT_MATCH = {
+    "wavefront": r"FormalSolutionWavefront|sc_sweep3d",
+    "diagonal": r"FormalSolutionDiagonal|sc_sweep_diag",
+    "diagonal_compact": r"FormalSolutionDiagonal|sc_sweep_diag",
+    "jacobi": r"FormalSolutionJacobi|sc_sweep_jacobi",
+}.get(SWEEP, r"FormalSolutionWavefront|sc_sweep3d")
+MATCH = re.compile(os.environ.get("RT_NSYS_MATCH", _DEFAULT_MATCH))
 
 
 def rays_total(nmu):
@@ -88,11 +96,11 @@ def parse_configs():
 # nsys invocation (fence-free deck; profile CUDA timeline; export per-launch trace to CSV)
 # ---------------------------------------------------------------------------
 def make_deck(cfg):
-    d = os.path.join(LO_OUT, f"B{cfg['B']}_N{cfg['N']}_nmu{cfg['nmu']}")
+    d = os.path.join(LO_OUT, f"{SWEEP}_B{cfg['B']}_N{cfg['N']}_nmu{cfg['nmu']}")
     os.makedirs(d, exist_ok=True)
     # DECK + RAD_BLOCK only -- deliberately NO PERF_BLOCK, so no per-kernel Kokkos::fence().
     text = rc.DECK.format(base=os.path.join(d, "lo"), N=cfg["N"], B=cfg["B"], nlim=NLIM)
-    text += rc.RAD_BLOCK.format(nmu=cfg["nmu"], sweep="wavefront")
+    text += rc.RAD_BLOCK.format(nmu=cfg["nmu"], sweep=SWEEP)
     deck = os.path.join(d, "deck.athinput")
     with open(deck, "w") as f:
         f.write(text)
@@ -223,7 +231,7 @@ def analyze_trace(path, expected_planes):
 def blank_row(cfg):
     B, N, nmu = cfg["B"], cfg["N"], cfg["nmu"]
     nmb = (N // B) ** 3
-    return dict(device=DEVICE, B=B, N=N, nmb=nmb, zones=N ** 3, nmu=nmu,
+    return dict(device=DEVICE, sweep=SWEEP, B=B, N=N, nmb=nmb, zones=N ** 3, nmu=nmu,
                 rays_total=rays_total(nmu), n_planes_expected=3 * B - 2,
                 nlim=NLIM, cycle_launches="", active_ms="", span_ms="", gap_ms="",
                 gap_fraction="", mean_interplane_gap_us="", note="")
@@ -232,7 +240,7 @@ def blank_row(cfg):
 def run_config(cfg):
     row = blank_row(cfg)
     d, deck = make_deck(cfg)
-    tag = f"B{cfg['B']}_N{cfg['N']}_nmu{cfg['nmu']}"
+    tag = f"{SWEEP}_B{cfg['B']}_N{cfg['N']}_nmu{cfg['nmu']}"
     if shutil.which("nsys") is None or not os.path.exists(BIN):
         row["note"] = f"nsys or bin missing (deck written: {deck})"
         print(f"  [skip {tag}: nsys/bin unavailable -- deck written for inspection]")
@@ -259,7 +267,8 @@ def run_config(cfg):
 
 def write_csv(rows):
     os.makedirs(LO_OUT, exist_ok=True)
-    p = os.path.join(LO_OUT, "results_nsys.csv")
+    suffix = "" if SWEEP == "wavefront" else f"_{SWEEP}"
+    p = os.path.join(LO_OUT, f"results_nsys{suffix}.csv")
     with open(p, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
