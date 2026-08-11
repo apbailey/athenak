@@ -31,6 +31,8 @@ void SC::FormalSolution() {
     FormalSolutionDiagonal();
   } else if (sweep_method == "jacobi") {
     FormalSolutionJacobi();
+  } else if (sweep_method == "wavefront_coalesced") {
+    FormalSolutionWavefrontCoalesced();
   } else {
     FormalSolutionWavefront();
   }
@@ -208,6 +210,102 @@ void SC::FormalSolutionWavefront() {
       });
     }
   }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::FormalSolutionWavefrontCoalesced
+//! \brief I2 gather-coalescing prototype (measurement only). Same wavefront sweep, but the intensity
+//! is transposed into an angle-INNERMOST scratch `ir_t(m,k,j,i,angg)` and the plane kernel is reordered
+//! so the WARP varies over angle (par_for(m,c,angg) => angg fastest). Consecutive lanes then read the
+//! footpoint `ir` at stride 1 (coalesced) and the angle-independent chi/srad as a broadcast. Bit-identical
+//! to `wavefront` (transpose is a pure copy; UpdateCellSC<true> runs the same FP ops via IrGet). The
+//! transpose + doubled memory exist ONLY to isolate the gather prize without touching the global ir
+//! layout or the shared bvals/AMR/moment code — they are not part of an eventual native design. 3D only
+//! (1D/2D fall back to the plain wavefront). See rt-profiling/OPTIMIZATION_LEDGER.md I2.
+
+void SC::FormalSolutionWavefrontCoalesced() {
+  if (pang->ndim != 3) { FormalSolutionWavefront(); return; }
+  if (wf_cell_.size() == 0) BuildWavefrontIndex();
+
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  int ndim = pang->ndim;
+  int nang = pang->nang;
+  int nangt1 = nang_tot - 1;
+  auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto ir_ = ir;
+  auto chi_ = chi;
+  auto srad_ = srad;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
+
+  // lazily allocate the angle-innermost scratch: (nmb, nc3, nc2, nc1, nang_tot) = transpose of ir
+  int nmb = ir_.extent_int(0), nc3 = ir_.extent_int(2);
+  int nc2 = ir_.extent_int(3), nc1 = ir_.extent_int(4);
+  if (ir_t.size() == 0) {
+    Kokkos::realloc(ir_t, nmb, nc3, nc2, nc1, nang_tot);
+  }
+  auto ir_t_ = ir_t;
+
+  // transpose IN: ir(m,angg,k,j,i) -> ir_t(m,k,j,i,angg), full array incl. ghosts
+  par_for("sc_ir_transpose_in", DevExeSpace(), 0, nmb1, 0, nangt1, 0, nc3-1, 0, nc2-1, 0, nc1-1,
+  KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
+    ir_t_(m,k,j,i,angg) = ir_(m,angg,k,j,i);
+  });
+
+  // reordered wavefront: warp varies over ANGLE (angg is the fastest par_for index); gather on ir_t
+  int nx1_ = nx1;
+  int nx12 = nx1*nx2;
+  int hmax = nx1 + nx2 + nx3 - 3;
+  auto wfc_ = wf_cell_;
+  for (int h = 0; h <= hmax; ++h) {
+    int lo = wf_plane_start_[h];
+    int cnt = wf_plane_start_[h+1] - lo;
+    if (cnt <= 0) continue;
+    par_for("sc_sweep3d_coal", DevExeSpace(), 0, nmb1, 0, cnt-1, 0, nangt1,
+    KOKKOS_LAMBDA(int m, int c, int angg) {
+      int lin = wfc_(lo + c);
+      int li3 = lin / nx12;
+      int r = lin - li3*nx12;
+      int li2 = r / nx1_;
+      int li1 = r - li2*nx1_;
+      int oct = angg / nang;
+      int a = angg - oct*nang;
+      Real mux = mu.d_view(oct,a,0);
+      Real muy = mu.d_view(oct,a,1);
+      Real muz = mu.d_view(oct,a,2);
+      int sx = (mux > 0.0) ? 1 : -1;
+      int sy = (muy > 0.0) ? 1 : -1;
+      int sz = (muz > 0.0) ? 1 : -1;
+      int i = (sx > 0) ? (is + li1) : (ie - li1);
+      int j = (sy > 0) ? (js + li2) : (je - li2);
+      int k = (sz > 0) ? (ks + li3) : (ke - li3);
+      Real dx1v = mbsize.d_view(m).dx1;
+      Real dx2v = mbsize.d_view(m).dx2;
+      Real dx3v = mbsize.d_view(m).dx3;
+      Real a1 = 0.0;
+      Real I = UpdateCellSC<true>(chi_,srad_,ir_t_,m,angg,
+                                  i,j,k, sx,sy,sz,
+                                  mux,muy,muz,
+                                  dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+      ir_t_(m,k,j,i,angg) = I;
+      if (accumulate) {
+        Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+      }
+    });
+  }
+
+  // transpose OUT: ir_t(m,k,j,i,angg) -> ir(m,angg,k,j,i), so downstream consumers see normal layout
+  par_for("sc_ir_transpose_out", DevExeSpace(), 0, nmb1, 0, nangt1, 0, nc3-1, 0, nc2-1, 0, nc1-1,
+  KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
+    ir_(m,angg,k,j,i) = ir_t_(m,k,j,i,angg);
+  });
 }
 
 //----------------------------------------------------------------------------------------

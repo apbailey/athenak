@@ -32,6 +32,7 @@ def _run_capture(inputfile):
         "sc_determinism_wavefront.athinput",
         "sc_determinism_diagonal.athinput",
         "sc_determinism_diagonal_compact.athinput",
+        "sc_determinism_wavefront_coalesced.athinput",
     ],
 )
 def test_sc_sweep_determinism(deck):
@@ -57,3 +58,16 @@ def test_sc_diagonal_compact_matches_diagonal():
     assert h_d is not None and h_c is not None, (
         f"could not parse PASS hash (diagonal={h_d}, compact={h_c})")
     assert h_d == h_c, f"diagonal_compact hash {h_c} != diagonal {h_d} -- NOT bit-identical"
+
+
+def test_sc_wavefront_coalesced_matches_wavefront():
+    """wavefront_coalesced (I2: angle-innermost transposed scratch + angle-warp sweep) must reproduce
+    baseline wavefront BIT-FOR-BIT: the transpose is a pure copy and UpdateCellSC<true> runs the same
+    FP ops (use_ali=false). The interior XOR-hash of both sweeps must be identical."""
+    rc_w, out_w = _run_capture("inputs/sc_determinism_wavefront.athinput")
+    rc_c, out_c = _run_capture("inputs/sc_determinism_wavefront_coalesced.athinput")
+    assert rc_w == 0 and rc_c == 0, f"athena crashed:\n{out_w[-1000:]}\n{out_c[-1000:]}"
+    h_w, h_c = _pass_hash(out_w), _pass_hash(out_c)
+    assert h_w is not None and h_c is not None, (
+        f"could not parse PASS hash (wavefront={h_w}, coalesced={h_c})")
+    assert h_w == h_c, f"wavefront_coalesced hash {h_c} != wavefront {h_w} -- NOT bit-identical"

@@ -109,6 +109,9 @@ class SC {
   DvceArray5D<Real> ir_prev;   // sweep=jacobi ping-pong buffer (previous-sweep field); other
                                // sweeps leave it unallocated. Removes the read-write race that an
                                // unordered jacobi par_for would otherwise have on `ir`.
+  DvceArray5D<Real> ir_t;      // sweep=wavefront_coalesced scratch: angle-INNERMOST transpose of ir,
+                               // shape (nmb, nc3, nc2, nc1, nang_tot). Lazily allocated; isolates the
+                               // I2 gather-coalescing measurement (global ir layout stays unchanged).
 
   // source iterate S: (nmb, 1, nx3, nx2, nx1) — nvar=1 for PackAndSendCC
   DvceArray5D<Real> srad;
@@ -213,6 +216,7 @@ class SC {
   // Sweep implementations. Public because Kokkos CUDA device lambdas cannot be
   // defined inside private/protected members.
   void FormalSolutionWavefront();
+  void FormalSolutionWavefrontCoalesced();  // I2 prototype: angle-warp sweep on transposed ir_t
   void FormalSolutionDiagonal();
   void FormalSolutionJacobi();
 

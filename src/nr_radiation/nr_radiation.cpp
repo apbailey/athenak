@@ -64,11 +64,13 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
 
   // Sweep parallelization strategy
   sweep_method = pin->GetOrAddString("nr_radiation", "sweep", "wavefront");
-  if (sweep_method != "wavefront" && sweep_method != "diagonal"
-      && sweep_method != "diagonal_compact" && sweep_method != "jacobi") {
+  if (sweep_method != "wavefront" && sweep_method != "wavefront_coalesced"
+      && sweep_method != "diagonal" && sweep_method != "diagonal_compact"
+      && sweep_method != "jacobi") {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "<nr_radiation>/sweep = '" << sweep_method << "' is not recognised; "
-      << "valid values are 'wavefront', 'diagonal', 'diagonal_compact', 'jacobi'" << std::endl;
+      << std::endl << "<nr_radiation>/sweep = '" << sweep_method << "' is not recognised; valid "
+      << "values are 'wavefront', 'wavefront_coalesced', 'diagonal', 'diagonal_compact', 'jacobi'"
+      << std::endl;
     std::exit(EXIT_FAILURE);
   }
   // sweep=diagonal_compact: optional explicit TeamPolicy team size (0 => Kokkos::AUTO).

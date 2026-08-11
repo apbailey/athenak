@@ -118,6 +118,24 @@ void InterpQuadSourceSlopeLim(Real dtaum, Real dtaup, Real S0, Real S1, Real S2,
 //!     downstream cell's own coefficients (exact only for a locally-uniform medium; see
 //!     SweepUpdateGS's doc comment for the approximation this implies).
 
+//----------------------------------------------------------------------------------------
+//! \fn Real IrGet()
+//! \brief Intensity read that hides the `ir` storage layout. ANG_INNER=false is the default
+//! layout `ir(m,angg,k,j,i)`; ANG_INNER=true is the angle-innermost scratch `ir(m,k,j,i,angg)`
+//! used by sweep=wavefront_coalesced (I2 gather-coalescing prototype). Same value either way, so
+//! callers stay bit-identical; only the memory access pattern differs.
+
+template <bool ANG_INNER>
+KOKKOS_INLINE_FUNCTION
+Real IrGet(const DvceArray5D<Real> &ir_, int m, int angg, int k, int j, int i) {
+  if constexpr (ANG_INNER) {
+    return ir_(m, k, j, i, angg);
+  } else {
+    return ir_(m, angg, k, j, i);
+  }
+}
+
+template <bool ANG_INNER = false>
 KOKKOS_INLINE_FUNCTION
 Real UpdateCellSC(
     const DvceArray4D<Real> &chi_, const DvceArray5D<Real> &srad_,
@@ -139,7 +157,7 @@ Real UpdateCellSC(
     chi2 = chi_(m,ks,js,ip);
     S0   = srad_(m,0,ks,js,im);
     S2   = srad_(m,0,ks,js,ip);
-    imu0 = ir_(m,angg,ks,js,im);
+    imu0 = IrGet<ANG_INNER>(ir_,m,angg,ks,js,im);
     dtaum = InterpQuadChi(chi0,chi1,chi2) * dx1 / fabs(mux);
     dtaup = InterpQuadChi(chi2,chi1,chi0) * dx1 / fabs(mux);
   } else if (ndim == 2) {
@@ -151,7 +169,7 @@ Real UpdateCellSC(
       S2    = am*srad_(m,0,ks,jp,ip)  + am1*srad_(m,0,ks,jp,i);
       chi0  = am*chi_(m,ks,jm,im) + am1*chi_(m,ks,jm,i);
       chi2  = am*chi_(m,ks,jp,ip) + am1*chi_(m,ks,jp,i);
-      imu0  = am*ir_(m,angg,ks,jm,im) + am1*ir_(m,angg,ks,jm,i);
+      imu0  = am*IrGet<ANG_INNER>(ir_,m,angg,ks,jm,im) + am1*IrGet<ANG_INNER>(ir_,m,angg,ks,jm,i);
       dtaum = InterpQuadChi(chi0,chi1,chi2) * dx2/fabs(muy);
       dtaup = InterpQuadChi(chi2,chi1,chi0) * dx2/fabs(muy);
     } else {
@@ -161,7 +179,7 @@ Real UpdateCellSC(
       S2    = bm*srad_(m,0,ks,jp,ip)  + bm1*srad_(m,0,ks,j,ip);
       chi0  = bm*chi_(m,ks,jm,im) + bm1*chi_(m,ks,j,im);
       chi2  = bm*chi_(m,ks,jp,ip) + bm1*chi_(m,ks,j,ip);
-      imu0  = bm*ir_(m,angg,ks,jm,im) + bm1*ir_(m,angg,ks,j,im);
+      imu0  = bm*IrGet<ANG_INNER>(ir_,m,angg,ks,jm,im) + bm1*IrGet<ANG_INNER>(ir_,m,angg,ks,j,im);
       dtaum = InterpQuadChi(chi0,chi1,chi2) * dx1/fabs(mux);
       dtaup = InterpQuadChi(chi2,chi1,chi0) * dx1/fabs(mux);
     }
@@ -180,8 +198,8 @@ Real UpdateCellSC(
               c2_*srad_(m,0,km,jm,im) + c3*srad_(m,0,k ,jm,im);
       chi0  = c0*chi_(m,k ,j ,im) + c1_*chi_(m,km,j ,im) +
               c2_*chi_(m,km,jm,im) + c3*chi_(m,k ,jm,im);
-      imu0  = c0*ir_(m,angg,k ,j ,im) + c1_*ir_(m,angg,km,j ,im) +
-              c2_*ir_(m,angg,km,jm,im) + c3*ir_(m,angg,k ,jm,im);
+      imu0  = c0*IrGet<ANG_INNER>(ir_,m,angg,k ,j ,im) + c1_*IrGet<ANG_INNER>(ir_,m,angg,km,j ,im) +
+              c2_*IrGet<ANG_INNER>(ir_,m,angg,km,jm,im) + c3*IrGet<ANG_INNER>(ir_,m,angg,k ,jm,im);
       S2    = c0*srad_(m,0,k ,j ,ip) + c1_*srad_(m,0,kp,j ,ip) +
               c2_*srad_(m,0,kp,jp,ip) + c3*srad_(m,0,k ,jp,ip);
       chi2  = c0*chi_(m,k ,j ,ip) + c1_*chi_(m,kp,j ,ip) +
@@ -196,8 +214,8 @@ Real UpdateCellSC(
               c2_*srad_(m,0,km,jm,im) + c3*srad_(m,0,k ,jm,im);
       chi0  = c0*chi_(m,k ,jm,i ) + c1_*chi_(m,km,jm,i ) +
               c2_*chi_(m,km,jm,im) + c3*chi_(m,k ,jm,im);
-      imu0  = c0*ir_(m,angg,k ,jm,i ) + c1_*ir_(m,angg,km,jm,i ) +
-              c2_*ir_(m,angg,km,jm,im) + c3*ir_(m,angg,k ,jm,im);
+      imu0  = c0*IrGet<ANG_INNER>(ir_,m,angg,k ,jm,i ) + c1_*IrGet<ANG_INNER>(ir_,m,angg,km,jm,i ) +
+              c2_*IrGet<ANG_INNER>(ir_,m,angg,km,jm,im) + c3*IrGet<ANG_INNER>(ir_,m,angg,k ,jm,im);
       S2    = c0*srad_(m,0,k ,jp,i ) + c1_*srad_(m,0,kp,jp,i ) +
               c2_*srad_(m,0,kp,jp,ip) + c3*srad_(m,0,k ,jp,ip);
       chi2  = c0*chi_(m,k ,jp,i ) + c1_*chi_(m,kp,jp,i ) +
@@ -212,8 +230,8 @@ Real UpdateCellSC(
               c2_*srad_(m,0,km,jm,im) + c3*srad_(m,0,km,j ,im);
       chi0  = c0*chi_(m,km,j ,i ) + c1_*chi_(m,km,jm,i ) +
               c2_*chi_(m,km,jm,im) + c3*chi_(m,km,j ,im);
-      imu0  = c0*ir_(m,angg,km,j ,i ) + c1_*ir_(m,angg,km,jm,i ) +
-              c2_*ir_(m,angg,km,jm,im) + c3*ir_(m,angg,km,j ,im);
+      imu0  = c0*IrGet<ANG_INNER>(ir_,m,angg,km,j ,i ) + c1_*IrGet<ANG_INNER>(ir_,m,angg,km,jm,i ) +
+              c2_*IrGet<ANG_INNER>(ir_,m,angg,km,jm,im) + c3*IrGet<ANG_INNER>(ir_,m,angg,km,j ,im);
       S2    = c0*srad_(m,0,kp,j ,i ) + c1_*srad_(m,0,kp,jp,i ) +
               c2_*srad_(m,0,kp,jp,ip) + c3*srad_(m,0,kp,j ,ip);
       chi2  = c0*chi_(m,kp,j ,i ) + c1_*chi_(m,kp,jp,i ) +
