@@ -202,11 +202,18 @@ void SC::UpdateOpacityAndSource() {
 //! \brief Intensity physical BCs only (RadiationBCs + optional user_bcs).
 
 void SC::ApplyPhysicalBCs() {
+  // ir_layout=angle_inner: physical BCs run on the normal-layout companion; then pull all fresh
+  // ghosts (neighbor + physical) back into the angle-inner ir. Full round-trip preserves the
+  // interior (unchanged in ir_normal since SendIr) and refreshes only the ghosts.
+  auto &ir_bc = ir_angle_inner ? ir_normal : ir;
   if (!(pmy_pack->pmesh->strictly_periodic)) {
-    pbval_ir->RadiationBCs(pmy_pack, i_in, ir);
+    pbval_ir->RadiationBCs(pmy_pack, i_in, ir_bc);
+  }
+  if (ir_angle_inner) {
+    SyncIrNormal(false);                                 // ir_normal -> ir(angle_inner)
   }
   if (pmy_pack->pmesh->pgen != nullptr && pmy_pack->pmesh->pgen->user_bcs) {
-    (pmy_pack->pmesh->pgen->user_bcs_func)(pmy_pack->pmesh);
+    (pmy_pack->pmesh->pgen->user_bcs_func)(pmy_pack->pmesh);   // NOTE: user_bcs untested w/ angle_inner
   }
 }
 
@@ -303,13 +310,14 @@ void SC::ComputeJ() {
   auto &wmu = pang->wmu;
   auto ir_ = ir;
   auto jmean_ = jmean;
+  bool ai = ir_angle_inner;   // ir stored (m,k,j,i,angg) vs (m,angg,k,j,i)
 
   par_for("sc_computeJ", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real J = 0.0;
     for (int angg = 0; angg < nang_tot_; ++angg) {
       int a = angg % nang;
-      J += wmu.d_view(a) * ir_(m, angg, k, j, i);
+      J += wmu.d_view(a) * (ai ? ir_(m, k, j, i, angg) : ir_(m, angg, k, j, i));
     }
     jmean_(m, k, j, i) = J;
   });
@@ -426,11 +434,18 @@ TaskStatus SC::RestrictIr(Driver *pdrive, int stage) {
 
 TaskStatus SC::SendIr(Driver *pdrive, int stage) {
   (void)pdrive; (void)stage;
+  if (ir_angle_inner) {
+    SyncIrNormal(true);                                 // ir(angle_inner) -> ir_normal for the exchange
+    return pbval_ir->PackAndSendCC(ir_normal, coarse_ir);
+  }
   return pbval_ir->PackAndSendCC(ir, coarse_ir);
 }
 
 TaskStatus SC::RecvIr(Driver *pdrive, int stage) {
   (void)pdrive; (void)stage;
+  if (ir_angle_inner) {
+    return pbval_ir->RecvAndUnpackCC(ir_normal, coarse_ir);
+  }
   return pbval_ir->RecvAndUnpackCC(ir, coarse_ir);
 }
 

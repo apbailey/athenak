@@ -48,7 +48,7 @@ std::uint64_t MixBits(double v, std::uint64_t pos) {
 // avoids ghost / scratch-buffer noise from the jacobi ping-pong swap.
 std::uint64_t InteriorHash(nr_radiation::SC *psc, int nmb1, int nangt1,
                            int ks, int ke, int js, int je, int is, int ie,
-                           int nat, int N1, int N2, int N3) {
+                           int nat, int N1, int N2, int N3, bool ai) {
   auto ir_h = Kokkos::create_mirror_view(psc->ir);
   Kokkos::deep_copy(ir_h, psc->ir);
   std::uint64_t h = 0;
@@ -58,8 +58,31 @@ std::uint64_t InteriorHash(nr_radiation::SC *psc, int nmb1, int nangt1,
         for (int j = js; j <= je; ++j) {
           for (int i = is; i <= ie; ++i) {
             std::uint64_t p = ((((static_cast<std::uint64_t>(m)*nat + ang)*N3 + k)*N2 + j)*N1 + i);
-            h ^= MixBits(ir_h(m,ang,k,j,i), p);
+            Real v = ai ? ir_h(m,k,j,i,ang) : ir_h(m,ang,k,j,i);   // angle-inner vs normal layout
+            h ^= MixBits(v, p);
           }
+        }
+      }
+    }
+  }
+  return h;
+}
+
+// Layout-INVARIANT hash of the mean intensity J (jmean is (m,k,j,i) either way) -- lets an
+// angle_inner run be compared bit-for-bit against a normal-layout run (same physics, different ir
+// storage). Requires psc->ComputeJ() to have been called on the current ir.
+std::uint64_t JmeanHash(nr_radiation::SC *psc, int nmb1,
+                        int ks, int ke, int js, int je, int is, int ie,
+                        int N1, int N2, int N3) {
+  auto j_h = Kokkos::create_mirror_view(psc->jmean);
+  Kokkos::deep_copy(j_h, psc->jmean);
+  std::uint64_t h = 0;
+  for (int m = 0; m <= nmb1; ++m) {
+    for (int k = ks; k <= ke; ++k) {
+      for (int j = js; j <= je; ++j) {
+        for (int i = is; i <= ie; ++i) {
+          std::uint64_t p = (((static_cast<std::uint64_t>(m)*N3 + k)*N2 + j)*N1 + i);
+          h ^= MixBits(j_h(m,k,j,i), p);
         }
       }
     }
@@ -109,6 +132,7 @@ void ProblemGenerator::SCSweepDeterminism(ParameterInput *pin, const bool restar
     chi_a(m,k,j,i)   = chi0;
     srad_a(m,0,k,j,i)  = ir_bg;   // uniform source; the ir gradient below drives old!=new upwind
   });
+  const bool ai = psc->ir_angle_inner;   // ir stored (m,k,j,i,ang) vs (m,ang,k,j,i)
   par_for("det_ir0", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
   KOKKOS_LAMBDA(int m, int ang, int k, int j, int i) {
     int c = (axis == 2) ? j : (axis == 3) ? k : i;
@@ -119,8 +143,35 @@ void ProblemGenerator::SCSweepDeterminism(ParameterInput *pin, const bool restar
     } else {
       g = static_cast<Real>(c) / 64.0;                                // smooth ramp
     }
-    ir_a(m,ang,k,j,i) = ir_bg + amp*g;
+    Real val = ir_bg + amp*g;
+    if (ai) { ir_a(m,k,j,i,ang) = val; } else { ir_a(m,ang,k,j,i) = val; }
   });
+
+  // ---- optional: end-to-end BOUNDARY-EXCHANGE bridge test (ir_layout=angle_inner) ----
+  // Zero the ghosts, run the real exchange sequence (which routes through SyncIrNormal +
+  // the UNCHANGED PackAndSendCC/RecvAndUnpackCC when angle_inner), and hash the refilled field.
+  // The angle_inner hash MUST equal the trusted normal-layout run's hash (same periodic ghosts).
+  if (pin->GetOrAddBoolean("problem", "test_exchange", false)) {
+    auto ir_z = psc->ir;
+    par_for("det_zero_ghost", DevExeSpace(), 0, nmb1, 0, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
+    KOKKOS_LAMBDA(int m, int ang, int k, int j, int i) {
+      bool ghost = (i < is || i > ie || j < js || j > je || k < ks || k > ke);
+      if (ghost) { if (ai) { ir_z(m,k,j,i,ang) = 0.0; } else { ir_z(m,ang,k,j,i) = 0.0; } }
+    });
+    psc->InitRecvIr(nullptr, 0);
+    psc->SendIr(nullptr, 0);
+    for (int t = 0; t < 10000 && psc->RecvIr(nullptr, 0) != TaskStatus::complete; ++t) {}
+    psc->ApplyPhysicalBCsIr(nullptr, 0);
+    psc->ClearSendIr(nullptr, 0);
+    psc->ClearRecvIr(nullptr, 0);
+    std::uint64_t eh = InteriorHash(psc, nmb1, nangt1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
+                                    nang_tot, n1, n2, n3, ai);
+    if (global_variable::my_rank == 0) {
+      std::printf("SC exchange_test ir_layout=%s hash 0x%016llx\n",
+                  (ai ? "angle_inner" : "normal"), static_cast<unsigned long long>(eh));
+    }
+    return;
+  }
 
   // ---- snapshot the frozen input ----
   DvceArray5D<Real> ir0("ir0_det", ir_a.extent_int(0), ir_a.extent_int(1),
@@ -135,7 +186,7 @@ void ProblemGenerator::SCSweepDeterminism(ParameterInput *pin, const bool restar
     Kokkos::deep_copy(psc->ir, ir0);     // reset the field the sweep reads (fixed input)
     psc->FormalSolution();               // dispatches on nr_radiation/sweep
     std::uint64_t h = InteriorHash(psc, nmb1, nangt1, ks, ke, js, je, is, ie,
-                                   nang_tot, n1, n2, n3);
+                                   nang_tot, n1, n2, n3, ai);
     if (rep == 0) {
       href = h;
     } else if (h != href) {
@@ -143,6 +194,12 @@ void ProblemGenerator::SCSweepDeterminism(ParameterInput *pin, const bool restar
       break;
     }
   }
+
+  // Layout-INVARIANT cross-check: compute J from the last swept ir and hash it. An angle_inner run
+  // must print the SAME jmean hash as the equivalent normal-layout run (same physics, different ir
+  // storage) -- the bit-exact gate for the reordered sweep + ComputeJ (ledger I2 native path).
+  psc->ComputeJ();
+  std::uint64_t jhash = JmeanHash(psc, nmb1, ks, ke, js, je, is, ie, n1, n2, n3);
 
   // Report the verdict on stdout and return NORMALLY (exit 0). We deliberately do NOT
   // std::exit() on a mismatch: under Kokkos+MPI that skips Kokkos::finalize() and makes
@@ -153,6 +210,9 @@ void ProblemGenerator::SCSweepDeterminism(ParameterInput *pin, const bool restar
     if (bad_rep < 0) {
       std::printf("SC %s sweep determinism PASS: %d identical launches (hash 0x%016llx)\n",
                   psc->sweep_method.c_str(), K, static_cast<unsigned long long>(href));
+      std::printf("SC %s ir_layout=%s jmean 0x%016llx\n", psc->sweep_method.c_str(),
+                  (ai ? "angle_inner" : "normal"),
+                  static_cast<unsigned long long>(jhash));
     } else {
       std::printf("SC %s sweep determinism FAIL (race): rep %d hash 0x%016llx != ref "
                   "0x%016llx  [%d relaunches]\n", psc->sweep_method.c_str(), bad_rep,

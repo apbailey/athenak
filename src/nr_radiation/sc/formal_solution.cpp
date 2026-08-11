@@ -33,6 +33,8 @@ void SC::FormalSolution() {
     FormalSolutionJacobi();
   } else if (sweep_method == "wavefront_coalesced") {
     FormalSolutionWavefrontCoalesced();
+  } else if (ir_angle_inner) {
+    FormalSolutionWavefrontAngleInner();   // native angle-innermost ir (I2)
   } else {
     FormalSolutionWavefront();
   }
@@ -306,6 +308,100 @@ void SC::FormalSolutionWavefrontCoalesced() {
   KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
     ir_(m,angg,k,j,i) = ir_t_(m,k,j,i,angg);
   });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::SyncIrNormal
+//! \brief Bridge for ir_layout=angle_inner: transpose between the angle-INNERMOST `ir(m,k,j,i,angg)`
+//! and the normal-layout companion `ir_normal(m,angg,k,j,i)` that the UNCHANGED CC exchange operates
+//! on. to_normal=true feeds the exchange (ir -> ir_normal); false pulls fresh ghosts back (ir_normal
+//! -> ir). Full-array copy (correctness first); a boundary-shell-only variant is the later speed opt.
+
+void SC::SyncIrNormal(bool to_normal) {
+  auto ir_ = ir;              // angle-inner (m,k,j,i,angg)
+  auto irn_ = ir_normal;      // normal      (m,angg,k,j,i)
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  int nangt1 = nang_tot - 1;
+  int nc3 = irn_.extent_int(2), nc2 = irn_.extent_int(3), nc1 = irn_.extent_int(4);
+  if (to_normal) {
+    par_for("sc_ir_to_normal", DevExeSpace(), 0, nmb1, 0, nangt1, 0, nc3-1, 0, nc2-1, 0, nc1-1,
+    KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
+      irn_(m,angg,k,j,i) = ir_(m,k,j,i,angg);
+    });
+  } else {
+    par_for("sc_ir_from_normal", DevExeSpace(), 0, nmb1, 0, nangt1, 0, nc3-1, 0, nc2-1, 0, nc1-1,
+    KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
+      ir_(m,k,j,i,angg) = irn_(m,angg,k,j,i);
+    });
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::FormalSolutionWavefrontAngleInner
+//! \brief I2 NATIVE: the coalesced angle-warp wavefront sweep run DIRECTLY on the angle-innermost
+//! `ir` (no transpose). Identical math to FormalSolutionWavefront (bit-identical converged J), but
+//! the warp varies over angle (`par_for(m,c,angg)`) so the footpoint `ir` gather coalesces and
+//! chi/srad broadcast. 3D only (guaranteed by the ir_layout=angle_inner validator).
+
+void SC::FormalSolutionWavefrontAngleInner() {
+  if (wf_cell_.size() == 0) BuildWavefrontIndex();
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  int ndim = pang->ndim;
+  int nang = pang->nang;
+  int nangt1 = nang_tot - 1;
+  auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto ir_ = ir;             // angle-innermost (m,k,j,i,angg)
+  auto chi_ = chi;
+  auto srad_ = srad;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
+  auto wfc_ = wf_cell_;
+  int nx1_ = nx1;
+  int nx12 = nx1*nx2;
+  int hmax = nx1 + nx2 + nx3 - 3;
+  for (int h = 0; h <= hmax; ++h) {
+    int lo = wf_plane_start_[h];
+    int cnt = wf_plane_start_[h+1] - lo;
+    if (cnt <= 0) continue;
+    par_for("sc_sweep3d_ai", DevExeSpace(), 0, nmb1, 0, cnt-1, 0, nangt1,
+    KOKKOS_LAMBDA(int m, int c, int angg) {
+      int lin = wfc_(lo + c);
+      int li3 = lin / nx12;
+      int r = lin - li3*nx12;
+      int li2 = r / nx1_;
+      int li1 = r - li2*nx1_;
+      int oct = angg / nang;
+      int a = angg - oct*nang;
+      Real mux = mu.d_view(oct,a,0);
+      Real muy = mu.d_view(oct,a,1);
+      Real muz = mu.d_view(oct,a,2);
+      int sx = (mux > 0.0) ? 1 : -1;
+      int sy = (muy > 0.0) ? 1 : -1;
+      int sz = (muz > 0.0) ? 1 : -1;
+      int i = (sx > 0) ? (is + li1) : (ie - li1);
+      int j = (sy > 0) ? (js + li2) : (je - li2);
+      int k = (sz > 0) ? (ks + li3) : (ke - li3);
+      Real dx1v = mbsize.d_view(m).dx1;
+      Real dx2v = mbsize.d_view(m).dx2;
+      Real dx3v = mbsize.d_view(m).dx3;
+      Real a1 = 0.0;
+      Real I = UpdateCellSC<true>(chi_,srad_,ir_,m,angg,
+                                  i,j,k, sx,sy,sz,
+                                  mux,muy,muz,
+                                  dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+      ir_(m,k,j,i,angg) = I;
+      if (accumulate) {
+        Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+      }
+    });
+  }
 }
 
 //----------------------------------------------------------------------------------------

@@ -8,7 +8,7 @@ problem  = SC sweep determinism / race probe (generic pgen; sweep chosen in <nr_
 # The race is only observable with a gradient (amp > 0); amp = 0 is a trivial uniform pass.
 
 <job>
-basename = ut_sc_determinism_wavefront
+basename = ut_sc_determinism_angle_inner
 
 <mesh>
 nghost = 2
@@ -48,7 +48,8 @@ eps          = 1.0
 prat         = 1.0
 crat         = 1.0
 affect_fluid = false
-sweep        = wavefront       # sanity: ordered sweep must be deterministic
+sweep        = wavefront
+ir_layout    = angle_inner
 iter_max     = 1
 itermin      = 1
 

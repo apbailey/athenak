@@ -82,6 +82,31 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     std::exit(EXIT_FAILURE);
   }
 
+  // ir_layout = normal (default) | angle_inner. angle_inner stores ir angle-INNERMOST for the native
+  // I2 coalesced wavefront; requires sweep=wavefront, 3D, and a uniform mesh (the generic CC/AMR code
+  // assumes angle=index1 — only the SC-side exchange is bridged; SMR/AMR is not).
+  {
+    std::string ir_layout = pin->GetOrAddString("nr_radiation", "ir_layout", "normal");
+    if (ir_layout != "normal" && ir_layout != "angle_inner") {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "<nr_radiation>/ir_layout = '" << ir_layout
+        << "' is not recognised; valid values are 'normal', 'angle_inner'" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    ir_angle_inner = (ir_layout == "angle_inner");
+    if (ir_angle_inner) {
+      auto &ind = ppack->pmesh->mb_indcs;
+      bool is_3d = (ind.nx3 > 1);
+      if (sweep_method != "wavefront" || !is_3d || ppack->pmesh->multilevel) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+          << "<nr_radiation>/ir_layout=angle_inner requires sweep=wavefront, a 3D problem, and a "
+          << "uniform (single-level) mesh; got sweep='" << sweep_method << "', 3D=" << is_3d
+          << ", multilevel=" << ppack->pmesh->multilevel << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+    }
+  }
+
   // Iteration control
   iter_max = pin->GetOrAddInteger("nr_radiation", "iter_max", 100);
   itermin  = pin->GetOrAddInteger("nr_radiation", "itermin", 2);
@@ -113,6 +138,12 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
       << std::endl << "<nr_radiation>/ali_mode=gauss_seidel requires sweep=wavefront "
       << "(the center-out GS uses the wavefront host-plane ordering); got sweep='"
       << sweep_method << "'" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (ir_angle_inner && ali_mode == "gauss_seidel") {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+      << "<nr_radiation>/ir_layout=angle_inner is incompatible with ali_mode=gauss_seidel "
+      << "(SweepUpdateGS is not angle-innermost-aware); use ali_mode=jacobi" << std::endl;
     std::exit(EXIT_FAILURE);
   }
   // GS local-scatter acceleration (Phase I2, Option B; iteration/prototype/REPORT.md). Only
@@ -204,7 +235,14 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells2 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*(indcs.ng)) : 1;
   int ncells3 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*(indcs.ng)) : 1;
 
-  Kokkos::realloc(ir, nmb, nang_tot, ncells3, ncells2, ncells1);
+  if (ir_angle_inner) {
+    // ir stored ANGLE-INNERMOST (m,k,j,i,angg); normal-layout companion ir_normal for the CC exchange.
+    Kokkos::realloc(ir, nmb, ncells3, ncells2, ncells1, nang_tot);
+    Kokkos::realloc(ir_normal, nmb, nang_tot, ncells3, ncells2, ncells1);
+    Kokkos::deep_copy(ir_normal, 0.0);
+  } else {
+    Kokkos::realloc(ir, nmb, nang_tot, ncells3, ncells2, ncells1);
+  }
   Kokkos::realloc(srad, nmb, 1, ncells3, ncells2, ncells1);
   Kokkos::realloc(chi, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(planck, nmb, ncells3, ncells2, ncells1);

@@ -37,6 +37,7 @@ void SC::CalculateMoments() {
   auto ir_ = ir;
   auto mom_ = moments;
   auto jmean_ = jmean;
+  bool ai = ir_angle_inner;   // ir stored (m,k,j,i,angg) vs (m,angg,k,j,i)
 
   par_for("sc_moments", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
@@ -51,7 +52,7 @@ void SC::CalculateMoments() {
       Real nx = mu.d_view(oct, a, 0);
       Real ny = mu.d_view(oct, a, 1);
       Real nz = mu.d_view(oct, a, 2);
-      Real wI = w * ir_(m, angg, k, j, i);
+      Real wI = w * (ai ? ir_(m, k, j, i, angg) : ir_(m, angg, k, j, i));
 
       J   += wI;
       H1  += nx * wI;

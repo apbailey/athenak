@@ -19,8 +19,8 @@ import pytest
 import test_suite.testutils as testutils
 
 
-def _run_capture(inputfile):
-    cmd = list(testutils.DEFAULT_LAUNCHER) + ["./athena", "-i", inputfile]
+def _run_capture(inputfile, extra=None):
+    cmd = list(testutils.DEFAULT_LAUNCHER) + ["./athena", "-i", inputfile] + (extra or [])
     rc, out, err = testutils.run_command_capture(cmd)
     return rc, (out or "") + (err or "")
 
@@ -33,6 +33,7 @@ def _run_capture(inputfile):
         "sc_determinism_diagonal.athinput",
         "sc_determinism_diagonal_compact.athinput",
         "sc_determinism_wavefront_coalesced.athinput",
+        "sc_determinism_angle_inner.athinput",
     ],
 )
 def test_sc_sweep_determinism(deck):
@@ -71,3 +72,29 @@ def test_sc_wavefront_coalesced_matches_wavefront():
     assert h_w is not None and h_c is not None, (
         f"could not parse PASS hash (wavefront={h_w}, coalesced={h_c})")
     assert h_w == h_c, f"wavefront_coalesced hash {h_c} != wavefront {h_w} -- NOT bit-identical"
+
+
+def _grep(out, pat):
+    m = re.search(pat, out)
+    return m.group(1) if m else None
+
+
+def test_sc_angle_inner_matches_normal():
+    """Native I2 (ir_layout=angle_inner): the reordered sweep+ComputeJ and the CC-exchange bridge
+    must reproduce the normal-layout wavefront BIT-FOR-BIT. (1) jmean hash of angle_inner ==
+    wavefront (reordered kernels); (2) boundary-exchange refill hash (problem/test_exchange=true)
+    of angle_inner == wavefront (the SyncIrNormal bridge around the UNCHANGED exchange)."""
+    rc_w, out_w = _run_capture("inputs/sc_determinism_wavefront.athinput")
+    rc_a, out_a = _run_capture("inputs/sc_determinism_angle_inner.athinput")
+    assert rc_w == 0 and rc_a == 0, f"athena crashed:\n{out_w[-1000:]}\n{out_a[-1000:]}"
+    jw, ja = _grep(out_w, r"jmean (0x[0-9a-fA-F]+)"), _grep(out_a, r"jmean (0x[0-9a-fA-F]+)")
+    assert jw and ja and jw == ja, f"angle_inner jmean {ja} != wavefront {jw} (reordered kernels)"
+
+    rc_we, out_we = _run_capture("inputs/sc_determinism_wavefront.athinput",
+                                 ["problem/test_exchange=true"])
+    rc_ae, out_ae = _run_capture("inputs/sc_determinism_angle_inner.athinput",
+                                 ["problem/test_exchange=true"])
+    assert rc_we == 0 and rc_ae == 0, f"athena crashed:\n{out_we[-1000:]}\n{out_ae[-1000:]}"
+    ew = _grep(out_we, r"exchange_test.*hash (0x[0-9a-fA-F]+)")
+    ea = _grep(out_ae, r"exchange_test.*hash (0x[0-9a-fA-F]+)")
+    assert ew and ea and ew == ea, f"angle_inner exchange {ea} != wavefront {ew} (bridge)"

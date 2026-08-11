@@ -82,6 +82,12 @@ class SC {
   // The diagonal kernel is latency-bound with few teams (nmb*nang_tot); a larger team hides more
   // latency (capped by register-limited occupancy). Clamped to team_size_max at launch.
   int diag_team_size;
+  // <nr_radiation>/ir_layout = normal (default) | angle_inner. When angle_inner, ir/coarse_ir are
+  // stored ANGLE-INNERMOST (m,k,j,i,angg) so the wavefront sweep + moments run coalesced natively
+  // (ledger I2). Opt-in; requires sweep=wavefront, ndim==3, uniform mesh (no SMR/AMR). The generic
+  // CC exchange (which assumes angle=index1) is bridged SC-side via a normal-layout companion
+  // ir_normal transposed around the UNCHANGED PackAndSendCC/RecvAndUnpackCC calls.
+  bool ir_angle_inner;
 
   // iteration control
   int iter_max;
@@ -112,6 +118,9 @@ class SC {
   DvceArray5D<Real> ir_t;      // sweep=wavefront_coalesced scratch: angle-INNERMOST transpose of ir,
                                // shape (nmb, nc3, nc2, nc1, nang_tot). Lazily allocated; isolates the
                                // I2 gather-coalescing measurement (global ir layout stays unchanged).
+  DvceArray5D<Real> ir_normal; // ir_layout=angle_inner ONLY: normal-layout (m,nang_tot,k,j,i) companion
+                               // used solely to bridge the UNCHANGED CC exchange (ir<->ir_normal sync
+                               // around PackAndSendCC/RecvAndUnpackCC). Empty when ir_layout=normal.
 
   // source iterate S: (nmb, 1, nx3, nx2, nx1) — nvar=1 for PackAndSendCC
   DvceArray5D<Real> srad;
@@ -217,6 +226,8 @@ class SC {
   // defined inside private/protected members.
   void FormalSolutionWavefront();
   void FormalSolutionWavefrontCoalesced();  // I2 prototype: angle-warp sweep on transposed ir_t
+  void FormalSolutionWavefrontAngleInner(); // I2 native: angle-warp sweep directly on angle-inner ir
+  void SyncIrNormal(bool to_normal);        // ir<->ir_normal transpose (CC-exchange bridge)
   void FormalSolutionDiagonal();
   void FormalSolutionJacobi();
 
