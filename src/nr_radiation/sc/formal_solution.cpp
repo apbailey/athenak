@@ -323,15 +323,28 @@ void SC::SyncIrNormal(bool to_normal) {
   int nmb1 = pmy_pack->nmb_thispack - 1;
   int nangt1 = nang_tot - 1;
   int nc3 = irn_.extent_int(2), nc2 = irn_.extent_int(3), nc1 = irn_.extent_int(4);
+  // Only the BOUNDARY SHELL crosses the ir<->ir_normal bridge: PackAndSendCC reads the nghost-deep
+  // interior send layers, RecvAndUnpackCC/RadiationBCs write the nghost ghost zones. The deep
+  // interior is never touched by the exchange (the sweep keeps it in ir), so skip it -- this is what
+  // turns the full-array transpose (prototype's tax) into an O(surface) op and realises the speedup.
+  // The shell = ghost zones + nghost interior layers on every face (a robust superset of both). The
+  // test_exchange gate fails if this misses a cell the exchange needs.
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie, js = indcs.js, je = indcs.je, ks = indcs.ks, ke = indcs.ke;
+  int ng = indcs.ng;
   if (to_normal) {
     par_for("sc_ir_to_normal", DevExeSpace(), 0, nmb1, 0, nangt1, 0, nc3-1, 0, nc2-1, 0, nc1-1,
     KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
-      irn_(m,angg,k,j,i) = ir_(m,k,j,i,angg);
+      if (i < is+ng || i > ie-ng || j < js+ng || j > je-ng || k < ks+ng || k > ke-ng) {
+        irn_(m,angg,k,j,i) = ir_(m,k,j,i,angg);
+      }
     });
   } else {
     par_for("sc_ir_from_normal", DevExeSpace(), 0, nmb1, 0, nangt1, 0, nc3-1, 0, nc2-1, 0, nc1-1,
     KOKKOS_LAMBDA(int m, int angg, int k, int j, int i) {
-      ir_(m,k,j,i,angg) = irn_(m,angg,k,j,i);
+      if (i < is+ng || i > ie-ng || j < js+ng || j > je-ng || k < ks+ng || k > ke-ng) {
+        ir_(m,k,j,i,angg) = irn_(m,angg,k,j,i);
+      }
     });
   }
 }
