@@ -63,7 +63,8 @@ SWEEP = os.environ.get("RT_NSYS_SWEEP", "wavefront")
 # is absent; the demangled enclosing method is present (see handover/apollo-access.md). Match
 # either; the default adapts to the sweep (diagonal/diagonal_compact share sc_sweep_diag).
 _DEFAULT_MATCH = {
-    "wavefront": r"FormalSolutionWavefront|sc_sweep3d",
+    "wavefront": r"FormalSolutionWavefront(?!Coalesced)|sc_sweep3d(?!_coal)",
+    "wavefront_coalesced": r"FormalSolutionWavefrontCoalesced|sc_sweep3d_coal",
     "diagonal": r"FormalSolutionDiagonal|sc_sweep_diag",
     "diagonal_compact": r"FormalSolutionDiagonal|sc_sweep_diag",
     "jacobi": r"FormalSolutionJacobi|sc_sweep_jacobi",
