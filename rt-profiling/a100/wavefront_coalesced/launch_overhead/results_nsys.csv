@@ -1,0 +1,6 @@
+device,sweep,B,N,nmb,zones,nmu,rays_total,n_planes_expected,nlim,cycle_launches,active_ms,span_ms,gap_ms,gap_fraction,mean_interplane_gap_us,note
+a100,wavefront,16,128,512,2097152,6,168,46,10,46,64.4562,65.5424,1.0862,0.01657,24.1379,10 bursts; sizes~[46]; expected 46/cycle
+a100,wavefront,32,128,64,2097152,6,168,94,10,94,70.2131,72.3554,2.1423,0.02961,23.036,10 bursts; sizes~[94]; expected 94/cycle
+a100,wavefront,64,128,8,2097152,6,168,190,10,190,75.8711,80.7544,4.8833,0.06047,25.8375,"11 bursts; sizes~[81, 109, 190]; expected 190/cycle"
+a100,wavefront,128,128,1,2097152,6,168,382,10,382,92.2852,101.1947,8.9096,0.08804,23.3847,"11 bursts; sizes~[184, 198, 382]; expected 382/cycle"
+a100,wavefront,64,128,8,2097152,3,48,190,10,190,25.3853,29.7509,4.3656,0.14674,23.0987,10 bursts; sizes~[190]; expected 190/cycle
