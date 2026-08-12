@@ -15,14 +15,15 @@ admin nor a rebuild:
 Kernel symbols are the Kokkos launch wrappers templated on the functor (lambda) type; the enclosing
 C++ method name is embedded in the *demangled* name (that is why the sweep is grep-able as
 "FormalSolutionWavefront").  We demangle with c++filt and tag kernels by enclosing method:
-  SC sweep : FormalSolutionWavefront | FormalSolutionDiagonal | FormalSolutionJacobi | SweepUpdateGS
+  SC sweep : FormalSolutionWavefront | FormalSolutionDiagonal | FormalSolutionTiled |
+             FormalSolutionJacobi | SweepUpdateGS
   hydro    : RKUpdate (h_update) | CalculateFluxes (hflux_*)
 
 Off a GPU/CUDA box (no cuobjdump) it prints the command it would run and exits 0, so it is
 verifiable before submitting to Apollo.
 
 Env: ATHENAK_BUILD (dir with 'athena'; default build/src), RT_OUT (output dir; default <here>/<dev>),
-     ATHENAK_DEVICE (tag; default cpu), KR_ARCH (sm80|sm90; default sm80 = A100).
+     ATHENAK_DEVICE (tag; default cpu), KR_ARCH (sm80|sm90|sm100|sm_100; default sm80 = A100).
 """
 import os
 import re
@@ -40,7 +41,7 @@ ARCH = os.environ.get("KR_ARCH", "sm80")
 
 # tag patterns (substrings expected in the demangled kernel name)
 SWEEP_PATTERNS = ["FormalSolutionWavefront", "FormalSolutionDiagonal",
-                  "FormalSolutionJacobi", "SweepUpdateGS"]
+                  "FormalSolutionTiled", "FormalSolutionJacobi", "SweepUpdateGS"]
 HYDRO_PATTERNS = ["RKUpdate", "CalculateFluxes"]
 
 # GPU limits per SM (occupancy model)
@@ -48,6 +49,9 @@ LIMITS = {
     # regs_per_sm, max_warps, max_blocks, smem_per_sm(bytes), reg_alloc_unit, warp_alloc_gran
     "sm80": dict(regs=65536, warps=64, blocks=32, smem=164 * 1024, reg_unit=256, warp_gran=4),
     "sm90": dict(regs=65536, warps=64, blocks=32, smem=228 * 1024, reg_unit=256, warp_gran=4),
+    # Blackwell B200 — same occupancy model as Hopper until measured limits differ
+    "sm_100": dict(regs=65536, warps=64, blocks=32, smem=228 * 1024, reg_unit=256, warp_gran=4),
+    "sm100": dict(regs=65536, warps=64, blocks=32, smem=228 * 1024, reg_unit=256, warp_gran=4),
 }
 BLOCK_SIZES = (128, 256, 512)
 

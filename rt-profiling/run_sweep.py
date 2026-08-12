@@ -82,8 +82,21 @@ NLIM_MEMFILL = int(os.environ.get("RT_NLIM_MEMFILL", "3"))
 MEM_CEIL = float(os.environ.get("RT_MEM_CEIL_GIB", "34"))
 BLOCK_FLOOR = int(os.environ.get("RT_BLOCK_FLOOR", "16"))
 NMU_MAX = min(6, int(os.environ.get("RT_NMU_MAX", "6")))
+# Explicit angular orders to run, instead of the full 1..NMU_MAX ladder. Useful for targeted
+# studies (e.g. the tile sweep only needs a low and a high angular order).
+NMU_LIST = [int(x) for x in os.environ.get("RT_NMU_LIST", "").split(",") if x.strip()]
 SWEEPS = os.environ.get("RT_SWEEPS", "wavefront,diagonal").split(",")
 IR_LAYOUT = os.environ.get("RT_IR_LAYOUT", "normal")   # normal (default) | angle_inner (I2)
+# sweep=tiled only: csv of tile edge sizes to try at each block size. 0 means "one tile per
+# meshblock", which degenerates to diagonal_compact. Non-divisors of B are skipped (the solver
+# would fatal). Ignored for every other sweep, which gets a single tile_size=0 pass.
+TILE_SIZES = [int(x) for x in os.environ.get("RT_TILE_SIZES", "0").split(",") if x.strip()]
+# Arbitrary extra <nr_radiation> keys applied to every config, as "k=v,k=v" (e.g.
+# RT_EXTRA="diag_team_size=128"). Written verbatim into the deck; used for one-off knob sweeps
+# without adding a dedicated env var per knob.
+EXTRA = dict(kv.split("=", 1) for kv in os.environ.get("RT_EXTRA", "").split(",") if "=" in kv)
+# Restrict the Phase-2 block ladder (default: all divisors of N* >= RT_BLOCK_FLOOR).
+BLOCK_LIST = [int(x) for x in os.environ.get("RT_BLOCK_LIST", "").split(",") if x.strip()]
 N_LIST = [int(x) for x in os.environ.get("RT_N_LIST", "128,144,160,176,192").split(",")]
 DCGM_FIELDS = [f for f in os.environ.get("RT_DCGM_FIELDS", "").split(",") if f.strip()]
 WARMUP = os.environ.get("RT_WARMUP", "1") == "1"
@@ -210,15 +223,22 @@ def run_with_monitor(run_fn, tag):
     os.makedirs(OUT, exist_ok=True)
     smp = open(smp_path, "w")
     cols = "utilization.gpu,utilization.memory,memory.used,clocks.sm,power.draw,temperature.gpu"
+    # Restrict sampling to the GPU this job actually uses. Without -i, nvidia-smi reports EVERY
+    # GPU on the node and the parser averages them: on a 4-GPU GB200 node running 1 rank that
+    # made every telemetry column read ~1/4 of the truth (SM-util 20.7% for a device delivering
+    # 1.3e9 ZCPS). See ARCH_SCALING.md 9. ZCPS was never affected -- it comes from the driver.
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    dev_arg = ["-i", vis.split(",")[0]] if vis else []
     p = subprocess.Popen(["nvidia-smi", f"--query-gpu={cols}",
-                          "--format=csv,noheader,nounits", "-lms", "200"],
+                          "--format=csv,noheader,nounits", "-lms", "200"] + dev_arg,
                          stdout=smp, stderr=subprocess.DEVNULL)
     dproc = dpath = None
     if HAVE_DCGM:
         dpath = os.path.join(OUT, f"_dcgm_{tag}.txt")
         df = open(dpath, "w")
-        dproc = subprocess.Popen(["dcgmi", "dmon", "-e", ",".join(DCGM_FIELDS), "-d", "200"],
-                                 stdout=df, stderr=subprocess.DEVNULL)
+        dcgm_dev = ["-i", vis.split(",")[0]] if vis else []
+        dproc = subprocess.Popen(["dcgmi", "dmon", "-e", ",".join(DCGM_FIELDS), "-d", "200"]
+                                 + dcgm_dev, stdout=df, stderr=subprocess.DEVNULL)
     try:
         res = run_fn()
     finally:
@@ -238,7 +258,7 @@ def run_with_monitor(run_fn, tag):
 
 def blank_row(**kw):
     """A CSV row with every column present (None where not applicable)."""
-    cols = ["phase", "suite", "device", "sweep", "ir_layout", "N", "B", "nmb", "zones", "nmu",
+    cols = ["phase", "suite", "device", "sweep", "ir_layout", "tile_size", "N", "B", "nmb", "zones", "nmu",
             "rays_per_octant", "rays_total", "nlim", "n_repeat", "peak_mem_gib", "pct_fill",
             "oom", "zcps_off_med", "zcps_on_med", "zcps_on_min", "zcps_on_max", "slowdown_med",
             "t_rad_ms", "t_hydro_ms", "t_sweep_ms", "rad_over_hydro", "sweep_over_hydro",
@@ -309,7 +329,7 @@ def phase1_memfill():
 
 # ---- Phase 2: the 2D sweep at N* -------------------------------------------------------------
 def phase2_sweep(N_star):
-    B_list = divisors_ge(N_star, BLOCK_FLOOR)
+    B_list = BLOCK_LIST if BLOCK_LIST else divisors_ge(N_star, BLOCK_FLOOR)
     print(f"[phase2] N*={N_star}  block ladder (>= {BLOCK_FLOOR}) = {B_list}")
     print(f"         sweeps={SWEEPS}  ir_layout={IR_LAYOUT}  nmu=1..{NMU_MAX}  "
           f"n_repeat={N_REPEAT}  nlim={NLIM}")
@@ -326,10 +346,24 @@ def phase2_sweep(N_star):
         off_med, off_lo, off_hi, _, _ = median_zcps(N_star, B, NLIM, None, N_REPEAT,
                                                      f"off_B{B}")
         for sweep in SWEEPS:
-            for nmu in range(1, NMU_MAX + 1):
+          # tile_size applies only to sweep=tiled; every other sweep gets one pass at 0.
+          # Skip non-divisors of B -- the solver fatals on those by design.
+          ts_list = [t for t in TILE_SIZES if t == 0 or B % t == 0] if sweep == "tiled" else [0]
+          for tsz in ts_list:
+            for nmu in (NMU_LIST if NMU_LIST else range(1, NMU_MAX + 1)):
                 perocc, ntot = rays(nmu)
-                cfg = dict(nmu=nmu, sweep=sweep, extra=f"ir_layout = {IR_LAYOUT}\n")
-                label = f"B{B}_nmu{nmu}_{sweep}"
+                cfg = dict(nmu=nmu, sweep=sweep)
+                # Both optimisation axes ride in the same extra-keys dict: ir_layout (I2,
+                # angle-innermost ir) and tile_size (I7, KBA tiling). They are orthogonal --
+                # tiling fixes team starvation, angle_inner fixes the gather -- so the sweep
+                # can vary either or both.
+                extra = dict(EXTRA)
+                extra["ir_layout"] = IR_LAYOUT
+                if sweep == "tiled":
+                    extra["tile_size"] = tsz
+                cfg["extra"] = extra
+                label = (f"B{B}_nmu{nmu}_{sweep}" if sweep != "tiled"
+                         else f"B{B}_nmu{nmu}_{sweep}_t{tsz}")
                 on_med, on_lo, on_hi, out_on, stats = median_zcps(N_star, B, NLIM, cfg,
                                                                   N_REPEAT, "on_" + label)
                 # one perf run for the kernel split
@@ -354,7 +388,7 @@ def phase2_sweep(N_star):
                 gcaups = (zc * (niter or 1) * (nang or 0) / (t_swp / 1e3) / 1e9) if t_swp else None
                 peak = stats.get("peak_mem_gib")
                 rows.append(blank_row(
-                    phase="2", suite="sweep", device=DEVICE, sweep=sweep, ir_layout=IR_LAYOUT,
+                    phase="2", suite="sweep", device=DEVICE, sweep=sweep, ir_layout=IR_LAYOUT, tile_size=tsz,
                     N=N_star, B=B, nmb=nmb,
                     zones=cells * nmb, nmu=nmu, rays_per_octant=perocc, rays_total=ntot,
                     nlim=NLIM, n_repeat=N_REPEAT, peak_mem_gib=peak,
