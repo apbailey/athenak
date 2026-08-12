@@ -19,6 +19,61 @@
 
 namespace nr_radiation {
 
+namespace {
+
+//----------------------------------------------------------------------------------------
+//! \fn int BuildPlaneIndex
+//! \brief Compact per-hyperplane index list for a box of dims (n1,n2,n3) with ndim active
+//! dimensions. Enumerates, for each plane h, exactly the cells with l1+l2+l3 == h (li = distance
+//! from the upwind corner) and stores the packed linear index lin=(l3*n2+l2)*n1+l1, grouped by
+//! plane via host_start (plane h == [start[h],start[h+1])). Returns hmax.
+//!
+//! Pure function of the dims — identical for every meshblock, every tile and every octant (the
+//! octant sign only flips i=lo+l1 vs hi-l1 in the kernel) — so callers build it once. Extracted
+//! from SC::BuildWavefrontIndex so the tiled sweep can reuse the identical rule at two nested
+//! levels: over the cells within a tile, and over the tiles themselves.
+//!
+//! dev_start is optional: pass it when the consumer's h-loop runs on device (the diagonal and
+//! tiled sweeps) and nullptr when the host drives the loop between launches (the wavefront).
+
+int BuildPlaneIndex(int n1, int n2, int n3, int ndim,
+                    DvceArray1D<int> &dev_cell, std::vector<int> &host_start,
+                    DvceArray1D<int> *dev_start) {
+  const int d2 = (ndim >= 2) ? n2 : 1;
+  const int d3 = (ndim == 3) ? n3 : 1;
+  const int ncells = n1 * d2 * d3;
+  const int hmax = (n1 - 1) + (d2 - 1) + (d3 - 1);
+
+  HostArray1D<int> h_cell("plane_cell_host", ncells);
+  host_start.assign(hmax + 2, 0);
+  int idx = 0;
+  for (int h = 0; h <= hmax; ++h) {
+    host_start[h] = idx;
+    for (int l3 = 0; l3 < d3; ++l3) {
+      for (int l2 = 0; l2 < d2; ++l2) {
+        int l1 = h - l2 - l3;
+        if (l1 < 0 || l1 >= n1) continue;
+        h_cell(idx++) = (l3 * n2 + l2) * n1 + l1;
+      }
+    }
+  }
+  host_start[hmax + 1] = idx;   // == ncells
+
+  Kokkos::realloc(dev_cell, ncells);
+  Kokkos::deep_copy(dev_cell, h_cell);
+
+  if (dev_start != nullptr) {
+    const int nstart = hmax + 2;
+    HostArray1D<int> h_start("plane_start_host", nstart);
+    for (int h = 0; h < nstart; ++h) { h_start(h) = host_start[h]; }
+    Kokkos::realloc(*dev_start, nstart);
+    Kokkos::deep_copy(*dev_start, h_start);
+  }
+  return hmax;
+}
+
+}  // namespace
+
 //----------------------------------------------------------------------------------------
 //! \fn void SC::FormalSolution
 //! \brief Dispatcher — delegates to the implementation selected by sweep_method.
@@ -29,6 +84,8 @@ void SC::FormalSolution() {
   }
   if (sweep_method == "diagonal" || sweep_method == "diagonal_compact") {
     FormalSolutionDiagonal();
+  } else if (sweep_method == "tiled") {
+    FormalSolutionTiled();
   } else if (sweep_method == "jacobi") {
     FormalSolutionJacobi();
   } else if (sweep_method == "wavefront_coalesced") {
@@ -54,41 +111,37 @@ void SC::FormalSolution() {
 
 void SC::BuildWavefrontIndex() {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
-  int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
-  int ndim = pang->ndim;
-  int n2 = (ndim >= 2) ? nx2 : 1;
-  int n3 = (ndim == 3) ? nx3 : 1;
-  int ncells = nx1 * n2 * n3;
-  int hmax;
-  if (ndim == 1) hmax = nx1 - 1;
-  else if (ndim == 2) hmax = nx1 + nx2 - 2;
-  else hmax = nx1 + nx2 + nx3 - 3;
+  // The device mirror wf_plane_start_dev_ is what sweep=diagonal_compact slices per plane (its
+  // h-loop runs on device); the host wavefront reads wf_plane_start_ between launches.
+  (void)BuildPlaneIndex(indcs.nx1, indcs.nx2, indcs.nx3, pang->ndim,
+                        wf_cell_, wf_plane_start_, &wf_plane_start_dev_);
+}
 
-  HostArray1D<int> h_cell("wf_cell_host", ncells);
-  wf_plane_start_.assign(hmax + 2, 0);
-  int idx = 0;
-  for (int h = 0; h <= hmax; ++h) {
-    wf_plane_start_[h] = idx;
-    for (int li3 = 0; li3 < n3; ++li3) {
-      for (int li2 = 0; li2 < n2; ++li2) {
-        int li1 = h - li2 - li3;
-        if (li1 < 0 || li1 >= nx1) continue;
-        h_cell(idx++) = (li3 * nx2 + li2) * nx1 + li1;   // packed linear interior index
-      }
-    }
-  }
-  wf_plane_start_[hmax + 1] = idx;   // == ncells
+//----------------------------------------------------------------------------------------
+//! \fn void SC::BuildTileIndex
+//! \brief Build the two nested hyperplane maps the tiled sweep needs: the cell map within one
+//! tile, and the map over tiles. tile_size==0 means "one tile == the whole meshblock", in which
+//! case the tile map is a single tile and the sweep degenerates to diagonal_compact exactly.
+//! Divisibility was validated in the constructor.
 
-  Kokkos::realloc(wf_cell_, ncells);
-  Kokkos::deep_copy(wf_cell_, h_cell);
+void SC::BuildTileIndex() {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  const int ndim = pang->ndim;
+  const int ts = tile_size;
 
-  // Device mirror of the plane-offset table, for sweep=diagonal_compact (its h-loop runs on device
-  // and must slice wf_cell_ per plane). Same one-time build; the host wavefront ignores it.
-  int nstart = hmax + 2;
-  HostArray1D<int> h_start("wf_plane_start_host", nstart);
-  for (int h = 0; h < nstart; ++h) { h_start(h) = wf_plane_start_[h]; }
-  Kokkos::realloc(wf_plane_start_dev_, nstart);
-  Kokkos::deep_copy(wf_plane_start_dev_, h_start);
+  tx1_ = (ts > 0) ? ts : indcs.nx1;
+  tx2_ = (ndim >= 2) ? ((ts > 0) ? ts : indcs.nx2) : 1;
+  tx3_ = (ndim == 3) ? ((ts > 0) ? ts : indcs.nx3) : 1;
+  nt1_ = indcs.nx1 / tx1_;
+  nt2_ = (ndim >= 2) ? indcs.nx2 / tx2_ : 1;
+  nt3_ = (ndim == 3) ? indcs.nx3 / tx3_ : 1;
+
+  // Cell map within a tile: device-side offsets, the kernel's inner h-loop slices it.
+  std::vector<int> tile_start_host;
+  hmax_tile_ = BuildPlaneIndex(tx1_, tx2_, tx3_, ndim,
+                               tile_cell_, tile_start_host, &tile_plane_start_dev_);
+  // Map over tiles: host-side offsets, they drive the per-tile-plane launch loop.
+  hmax_tplane_ = BuildPlaneIndex(nt1_, nt2_, nt3_, ndim, tp_cell_, tp_start_, nullptr);
 }
 
 //----------------------------------------------------------------------------------------
@@ -642,6 +695,139 @@ void SC::FormalSolutionDiagonal() {
       tmember.team_barrier();
     }
   });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::FormalSolutionTiled
+//! \brief Tiled (KBA) sweep — one kernel launch per TILE-plane; each team sweeps one tile with
+//! the diagonal's inner h-loop.
+//!
+//! Why this is safe where splitting a cell-plane across teams is not: the footpoint stencil
+//! reaches at most one cell in each direction, so a cell in tile (ta,tb,tc) reads only that tile
+//! or its upwind CORNER SET — (ta-1,tb,tc), (ta,tb-1,tc), (ta,tb,tc-1) and the four diagonal
+//! combinations. Every member has at least one index decremented, hence lies on a tile-plane with
+//! ta+tb+tc strictly smaller, hence was finished by an EARLIER LAUNCH. A kernel boundary is a
+//! genuine global barrier, so no cross-team synchronization is needed inside a launch. Each cell
+//! therefore reads the same fully-updated upwind values, in the same arithmetic order, as every
+//! other sweep: bit-identical (gate on the sc_sweep_determinism hash).
+//!
+//! Motivation: the diagonal's league is only nmb*nang_tot, so at few/large meshblocks it starves
+//! the GPU (168 teams for a single 176^3 block). Tiling multiplies the league by the number of
+//! tiles on the current tile-plane while keeping each team's work at the tile size where the
+//! diagonal already wins, and gives every team a tile-sized working set instead of a whole
+//! block-plane. Launch count is the number of tile-planes, far below the wavefront's 3B-2.
+//! Full design, index algebra and expected effect: rt-profiling/TILED_SWEEP_DESIGN.md.
+//!
+//! tile_size == 0 => one tile == the whole meshblock => a single tile-plane, league == the
+//! diagonal's, and the inner loop is diagonal_compact's. That degenerate setting is the
+//! self-validating scaffold: it must reproduce diagonal_compact bit-for-bit.
+
+void SC::FormalSolutionTiled() {
+  if (tile_cell_.size() == 0) { BuildTileIndex(); }
+
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb = pmy_pack->nmb_thispack;
+  int ndim = pang->ndim;
+  int nang = pang->nang;
+  int nang_tot_ = nang_tot;
+  auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto ir_ = ir;
+  auto chi_ = chi;
+  auto srad_ = srad;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
+
+  auto tcell_ = tile_cell_;
+  auto tstart_ = tile_plane_start_dev_;
+  auto tpc_ = tp_cell_;
+  const int tx1 = tx1_, tx2 = tx2_, tx3 = tx3_;
+  const int nt1 = nt1_, nt2 = nt2_;
+  const int nt12 = nt1_ * nt2_;
+  const int tx12 = tx1_ * tx2_;
+  const int hmax_tile = hmax_tile_;
+
+  for (int H = 0; H <= hmax_tplane_; ++H) {
+    const int tlo = tp_start_[H];
+    const int ntile = tp_start_[H+1] - tlo;
+    if (ntile <= 0) continue;
+
+    const int league_size = ntile * nmb * nang_tot_;
+    // Team size: Kokkos::AUTO by default, overridable via <nr_radiation>/diag_team_size (shared
+    // with sweep=diagonal_compact -- same team-per-(block,angle) family). AUTO resolves PER
+    // KERNEL from its register footprint, and this kernel's differs from the diagonal's (88 vs
+    // 94 regs), so the two can land on different team sizes. That is invisible when the league
+    // is large, but at a single meshblock the league is only nmb*nang_tot (48 teams at nmu=3),
+    // and then team size alone decides how much of the GPU is resident -- see
+    // TILING_REPORT.md for the measurement that pins the tile_size=0 regression on exactly this.
+    Kokkos::TeamPolicy<> policy = (diag_team_size > 0)
+        ? Kokkos::TeamPolicy<>(DevExeSpace(), league_size, diag_team_size)
+        : Kokkos::TeamPolicy<>(DevExeSpace(), league_size, Kokkos::AUTO);
+    Kokkos::parallel_for("sc_sweep_tiled", policy,
+    KOKKOS_LAMBDA(const TeamMember_t &tmember) {
+      // Decode with the TILE outermost so that teams sharing a tile carry consecutive league
+      // ids: they are dispatched together and then share that tile's chi/srad in L2.
+      const int lid = tmember.league_rank();
+      const int t = lid / (nmb * nang_tot_);
+      const int rem = lid - t * (nmb * nang_tot_);
+      const int m = rem / nang_tot_;
+      const int angg = rem - m * nang_tot_;
+
+      const int tlin = tpc_(tlo + t);              // packed tile index (tc*nt2+tb)*nt1+ta
+      const int tc = tlin / nt12;
+      const int tr = tlin - tc * nt12;
+      const int tb = tr / nt1;
+      const int ta = tr - tb * nt1;
+
+      const int oct = angg / nang;
+      const int a = angg - oct * nang;
+      Real mux = mu.d_view(oct,a,0);
+      Real muy = (ndim >= 2) ? mu.d_view(oct,a,1) : 0.0;
+      Real muz = (ndim == 3) ? mu.d_view(oct,a,2) : 0.0;
+      int sx = (mux > 0.0) ? 1 : -1;
+      int sy = (ndim >= 2) ? ((muy > 0.0) ? 1 : -1) : 0;
+      int sz = (ndim == 3) ? ((muz > 0.0) ? 1 : -1) : 0;
+      Real dx1v = mbsize.d_view(m).dx1;
+      Real dx2v = mbsize.d_view(m).dx2;
+      Real dx3v = mbsize.d_view(m).dx3;
+      Real w = wmu.d_view(a);
+
+      // Tile origin = the tile's UPWIND corner cell, counted from the octant's upwind end.
+      const int i0 = (sx > 0) ? (is + ta*tx1) : (ie - ta*tx1);
+      const int j0 = (sy > 0) ? (js + tb*tx2) : (je - tb*tx2);
+      const int k0 = (sz > 0) ? (ks + tc*tx3) : (ke - tc*tx3);
+
+      for (int h = 0; h <= hmax_tile; ++h) {
+        const int lo = tstart_(h);
+        const int cnt = tstart_(h + 1) - lo;
+        Kokkos::parallel_for(Kokkos::TeamThreadRange(tmember, cnt),
+        [&](const int c) {
+          const int lin = tcell_(lo + c);          // packed tile-local index (l3*tx2+l2)*tx1+l1
+          const int l3 = lin / tx12;
+          const int r = lin - l3 * tx12;
+          const int l2 = r / tx1;
+          const int l1 = r - l2 * tx1;
+          const int i = (sx > 0) ? (i0 + l1) : (i0 - l1);
+          const int j = (sy > 0) ? (j0 + l2) : (j0 - l2);
+          const int k = (sz > 0) ? (k0 + l3) : (k0 - l3);
+          Real a1 = 0.0;
+          Real I = UpdateCellSC(chi_,srad_,ir_,m,angg,
+                                i,j,k, sx,sy,sz,
+                                mux,muy,muz,
+                                dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+          ir_(m,angg,k,j,i) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,k,j,i), w * a1);
+          }
+        });
+        tmember.team_barrier();
+      }
+    });
+  }
 }
 
 //----------------------------------------------------------------------------------------

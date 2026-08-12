@@ -66,14 +66,27 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   sweep_method = pin->GetOrAddString("nr_radiation", "sweep", "wavefront");
   if (sweep_method != "wavefront" && sweep_method != "wavefront_coalesced"
       && sweep_method != "diagonal" && sweep_method != "diagonal_compact"
-      && sweep_method != "jacobi") {
+      && sweep_method != "tiled" && sweep_method != "jacobi") {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
       << std::endl << "<nr_radiation>/sweep = '" << sweep_method << "' is not recognised; valid "
-      << "values are 'wavefront', 'wavefront_coalesced', 'diagonal', 'diagonal_compact', 'jacobi'"
+      << "values are 'wavefront', 'wavefront_coalesced', 'diagonal', 'diagonal_compact', "
+      << "'tiled', 'jacobi'"
       << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  // sweep=diagonal_compact: optional explicit TeamPolicy team size (0 => Kokkos::AUTO).
+  // sweep=tiled: tile edge in cells. 0 (default) => one tile per meshblock, which makes the
+  // tiled sweep degenerate to diagonal_compact exactly — the self-validating setting. A tile
+  // must divide the meshblock interior dims: partial tiles would need a separate plane map per
+  // tile shape for no gain, and meshblock dims are chosen from divisor ladders anyway.
+  tile_size = pin->GetOrAddInteger("nr_radiation", "tile_size", 0);
+  if (tile_size < 0) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/tile_size must be >= 0 (0 = one tile per meshblock); got "
+      << tile_size << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  // sweep=diagonal_compact and sweep=tiled: optional explicit TeamPolicy team size
+  // (0 => Kokkos::AUTO). Both are team-per-(meshblock,angle) kernels, so they share the knob.
   diag_team_size = pin->GetOrAddInteger("nr_radiation", "diag_team_size", 0);
   if (diag_team_size < 0) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
@@ -244,6 +257,25 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
       << "3D is an implicitly over-relaxed coupling (factor up to ~3) that can diverge to NaN on "
       << "isotropic scattering problems. Prefer gs_scatter_mode=normalized (default, stable) with "
       << "ali_omega>1 for controlled SOR; see iteration/gs-scatter-3d-origin.md." << std::endl;
+  }
+
+  // sweep=tiled divisibility check (needs ndim and the meshblock dims, both known by here).
+  if (sweep_method == "tiled" && tile_size > 0) {
+    auto &mbi = pmy_pack->pmesh->mb_indcs;
+    int bad = 0;
+    if (mbi.nx1 % tile_size != 0) bad = 1;
+    if (ndim >= 2 && mbi.nx2 % tile_size != 0) bad = 2;
+    if (ndim == 3 && mbi.nx3 % tile_size != 0) bad = 3;
+    if (bad) {
+      int n = (bad == 1) ? mbi.nx1 : ((bad == 2) ? mbi.nx2 : mbi.nx3);
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "<nr_radiation>/tile_size = " << tile_size << " does not divide the "
+        << "meshblock x" << bad << " interior size " << n << ". Valid tile sizes for x" << bad
+        << " are:";
+      for (int d = 1; d <= n; ++d) { if (n % d == 0) std::cout << " " << d; }
+      std::cout << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
   }
 
   // Array allocation ----------------------------------------------------------------

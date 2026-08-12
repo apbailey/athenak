@@ -76,8 +76,12 @@ class SC {
   bool affect_fluid;   // apply Q_rad back onto the fluid energy equation
 
   // sweep parallelization strategy: "wavefront" (default), "diagonal", "diagonal_compact",
-  // or "jacobi"
+  // "tiled", or "jacobi"
   std::string sweep_method;
+  // sweep=tiled only: tile edge in cells (0 = whole meshblock, which reduces the tiled sweep to
+  // diagonal_compact exactly). Must divide the meshblock interior dims; validated at
+  // construction. See rt-profiling/TILED_SWEEP_DESIGN.md.
+  int tile_size;
   // sweep=diagonal_compact only: explicit TeamPolicy team size (0 = Kokkos::AUTO, the default).
   // The diagonal kernel is latency-bound with few teams (nmb*nang_tot); a larger team hides more
   // latency (capped by register-limited occupancy). Clamped to team_size_max at launch.
@@ -174,6 +178,21 @@ class SC {
   // SCRayInv (sc_interp.hpp) so the header need not include it. Built once by BuildAngleInvTable();
   // read by the wavefront sweep's hoisted variant. Empty (size 0) unless sc_hoist.
   DvceArray2D<Real> sc_inv_;
+  // Tiled (KBA) sweep index maps — two nested applications of the same hyperplane rule, both
+  // pure functions of the meshblock/tile dims, so both are built once (BuildTileIndex()).
+  //   tile_cell_ / tile_plane_start_dev_ : the compact per-plane cell list WITHIN one tile,
+  //     packed as lin=(l3*tx2+l2)*tx1+l1. Device-side: the h-loop runs inside the kernel.
+  //   tp_cell_ / tp_start_ : the map over TILES, packed as (tc*nt2+tb)*nt1+ta, grouped by
+  //     tile-plane H=ta+tb+tc. tp_start_ is host-side: it drives the launch loop, one kernel
+  //     per tile-plane, and that kernel boundary IS the cross-tile barrier.
+  DvceArray1D<int> tile_cell_;
+  DvceArray1D<int> tile_plane_start_dev_;
+  DvceArray1D<int> tp_cell_;
+  std::vector<int> tp_start_;
+  int tx1_ = 0, tx2_ = 0, tx3_ = 0;      // tile dims in cells
+  int nt1_ = 0, nt2_ = 0, nt3_ = 0;      // tiles per axis
+  int hmax_tile_ = 0;                    // last cell-plane index within a tile
+  int hmax_tplane_ = 0;                  // last tile-plane index
 
   // inflow intensity table (nang_tot, 6 faces): default 0 = vacuum edges
   DualArray2D<Real> i_in;
@@ -245,6 +264,15 @@ class SC {
   void FormalSolutionDiagonal();
   void FormalSolutionJacobi();
 
+  //! Tiled (KBA) sweep: partition the meshblock into tiles and run a wavefront over TILE-planes,
+  //! one kernel launch per tile-plane, each team sweeping one tile with the diagonal's inner
+  //! h-loop. The cross-tile barrier is the kernel boundary, so unlike splitting a single cell-
+  //! plane across teams (a data race) this is safe: a tile reads only its upwind corner
+  //! neighbours, all of which sit on strictly lower tile-planes and so completed in an earlier
+  //! launch. Bit-identical to the other sweeps. tile_size=0 (whole block) degenerates to exactly
+  //! diagonal_compact. See rt-profiling/TILED_SWEEP_DESIGN.md.
+  void FormalSolutionTiled();
+
   //! Precompute the compact per-hyperplane cell-index map used by the 2D/3D wavefront sweep
   //! (fills wf_cell_ / wf_plane_start_). Static in the meshblock interior dims, so built once.
   void BuildWavefrontIndex();
@@ -253,6 +281,9 @@ class SC {
   //! One device par_for over angg calling the same ComputeSCAngleInv the recompute path uses, so
   //! the table is bit-identical to the inline computation. Uniform-mesh only (uses meshblock-0 dx).
   void BuildAngleInvTable();
+  //! Precompute the two index maps the tiled sweep needs (tile-local cells, and tiles). Both are
+  //! pure functions of the meshblock/tile dims, so this runs once on first use.
+  void BuildTileIndex();
 
  private:
   MeshBlockPack* pmy_pack;
