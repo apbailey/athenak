@@ -143,6 +143,8 @@ def run_case(label, N, B, nlim, rad=None, perf=False):
     text = DECK.format(base=os.path.join(d, "rc"), N=N, B=B, nlim=nlim)
     if rad is not None:
         text += RAD_BLOCK.format(nmu=rad["nmu"], sweep=rad["sweep"])
+        if rad.get("extra"):
+            text += rad["extra"]
     if perf:
         text += PERF_BLOCK
     deck = os.path.join(d, "deck.athinput")

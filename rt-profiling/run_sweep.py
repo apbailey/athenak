@@ -83,6 +83,7 @@ MEM_CEIL = float(os.environ.get("RT_MEM_CEIL_GIB", "34"))
 BLOCK_FLOOR = int(os.environ.get("RT_BLOCK_FLOOR", "16"))
 NMU_MAX = min(6, int(os.environ.get("RT_NMU_MAX", "6")))
 SWEEPS = os.environ.get("RT_SWEEPS", "wavefront,diagonal").split(",")
+IR_LAYOUT = os.environ.get("RT_IR_LAYOUT", "normal")   # normal (default) | angle_inner (I2)
 N_LIST = [int(x) for x in os.environ.get("RT_N_LIST", "128,144,160,176,192").split(",")]
 DCGM_FIELDS = [f for f in os.environ.get("RT_DCGM_FIELDS", "").split(",") if f.strip()]
 WARMUP = os.environ.get("RT_WARMUP", "1") == "1"
@@ -237,7 +238,7 @@ def run_with_monitor(run_fn, tag):
 
 def blank_row(**kw):
     """A CSV row with every column present (None where not applicable)."""
-    cols = ["phase", "suite", "device", "sweep", "N", "B", "nmb", "zones", "nmu",
+    cols = ["phase", "suite", "device", "sweep", "ir_layout", "N", "B", "nmb", "zones", "nmu",
             "rays_per_octant", "rays_total", "nlim", "n_repeat", "peak_mem_gib", "pct_fill",
             "oom", "zcps_off_med", "zcps_on_med", "zcps_on_min", "zcps_on_max", "slowdown_med",
             "t_rad_ms", "t_hydro_ms", "t_sweep_ms", "rad_over_hydro", "sweep_over_hydro",
@@ -268,12 +269,12 @@ def phase1_memfill():
     B, nmu, sweep = BLOCK_FLOOR, NMU_MAX, SWEEPS[0]
     perocc, ntot = rays(nmu)
     print(f"[phase1] memory-fill: B={B} nmu={nmu} ({ntot} rays) sweep={sweep} "
-          f"nlim={NLIM_MEMFILL} ceil={MEM_CEIL} GiB  device_mem={MEM_TOTAL} GiB")
+          f"ir_layout={IR_LAYOUT} nlim={NLIM_MEMFILL} ceil={MEM_CEIL} GiB  device_mem={MEM_TOTAL} GiB")
     rows, N_star, consec_oom = [], None, 0
     for N in sorted(set(N_LIST)):
         if N % B != 0:
             print(f"  N={N} not divisible by B={B}; skipping"); continue
-        cfg = dict(nmu=nmu, sweep=sweep)
+        cfg = dict(nmu=nmu, sweep=sweep, extra=f"ir_layout = {IR_LAYOUT}\n")
         (out, _), stats = run_with_monitor(
             lambda: rc.run_case(f"memfill_N{N}", N, B, NLIM_MEMFILL, rad=cfg, perf=False),
             f"memfill_N{N}")
@@ -287,7 +288,8 @@ def phase1_memfill():
             consec_oom = 0
         else:
             consec_oom += 1
-        rows.append(blank_row(phase="1", suite="memfill", device=DEVICE, sweep=sweep, N=N, B=B,
+        rows.append(blank_row(phase="1", suite="memfill", device=DEVICE, sweep=sweep,
+                              ir_layout=IR_LAYOUT, N=N, B=B,
                               nmb=(N // B) ** 3, zones=N ** 3, nmu=nmu, rays_per_octant=perocc,
                               rays_total=ntot, nlim=NLIM_MEMFILL, n_repeat=1, peak_mem_gib=peak,
                               pct_fill=pct, oom=oom, zcps_on_med=z, **{k: stats.get(k) for k in
@@ -309,12 +311,14 @@ def phase1_memfill():
 def phase2_sweep(N_star):
     B_list = divisors_ge(N_star, BLOCK_FLOOR)
     print(f"[phase2] N*={N_star}  block ladder (>= {BLOCK_FLOOR}) = {B_list}")
-    print(f"         sweeps={SWEEPS}  nmu=1..{NMU_MAX}  n_repeat={N_REPEAT}  nlim={NLIM}")
+    print(f"         sweeps={SWEEPS}  ir_layout={IR_LAYOUT}  nmu=1..{NMU_MAX}  "
+          f"n_repeat={N_REPEAT}  nlim={NLIM}")
     rows = []
     if WARMUP and B_list:
         print("[phase2] warmup run (discarded)")
         run_with_monitor(lambda: rc.run_case("warmup", N_star, B_list[-1], 3,
-                         rad=dict(nmu=1, sweep=SWEEPS[0]), perf=False), "warmup")
+                         rad=dict(nmu=1, sweep=SWEEPS[0],
+                                  extra=f"ir_layout = {IR_LAYOUT}\n"), perf=False), "warmup")
     for B in B_list:
         nmb = (N_star // B) ** 3
         cells = B ** 3
@@ -324,7 +328,7 @@ def phase2_sweep(N_star):
         for sweep in SWEEPS:
             for nmu in range(1, NMU_MAX + 1):
                 perocc, ntot = rays(nmu)
-                cfg = dict(nmu=nmu, sweep=sweep)
+                cfg = dict(nmu=nmu, sweep=sweep, extra=f"ir_layout = {IR_LAYOUT}\n")
                 label = f"B{B}_nmu{nmu}_{sweep}"
                 on_med, on_lo, on_hi, out_on, stats = median_zcps(N_star, B, NLIM, cfg,
                                                                   N_REPEAT, "on_" + label)
@@ -350,7 +354,8 @@ def phase2_sweep(N_star):
                 gcaups = (zc * (niter or 1) * (nang or 0) / (t_swp / 1e3) / 1e9) if t_swp else None
                 peak = stats.get("peak_mem_gib")
                 rows.append(blank_row(
-                    phase="2", suite="sweep", device=DEVICE, sweep=sweep, N=N_star, B=B, nmb=nmb,
+                    phase="2", suite="sweep", device=DEVICE, sweep=sweep, ir_layout=IR_LAYOUT,
+                    N=N_star, B=B, nmb=nmb,
                     zones=cells * nmb, nmu=nmu, rays_per_octant=perocc, rays_total=ntot,
                     nlim=NLIM, n_repeat=N_REPEAT, peak_mem_gib=peak,
                     pct_fill=(100.0 * peak / MEM_TOTAL) if (peak and MEM_TOTAL) else None,
@@ -369,6 +374,8 @@ def phase2_sweep(N_star):
                 print(f"  B={B:<4} nmb={nmb:<5} {sweep:<9} nmu={nmu} rays={ntot:<3} "
                       f"ZCPS off={off_med} on={on_med} slow={sd}")
     suffix = SWEEPS[0] if len(SWEEPS) == 1 else "both"
+    if IR_LAYOUT != "normal":
+        suffix += f"_{IR_LAYOUT}"
     write_csv(rows, os.path.join(OUT, f"results_{suffix}.csv"))
     return rows
 
