@@ -14,6 +14,10 @@ fences after every kernel (`src/utils/perf.cpp` `KernelsProbe::OnEnd`) and exclu
 it **over-penalises many-launch (big-block) configs** and manufactured an artifactual "−34 % big-block
 loss." See `REPORT.md` §3.6 and `a100/launch_overhead/SUMMARY.md`.
 
+**`REPORT2.md` (2026-08-12)** repeats the original `REPORT.md` A100 Phase-1/Phase-2 study with the
+shipped I1 (`diagonal_compact`, same N★=176) and I2 (`angle_inner`, its own N★_ai=144) in place of the
+old `diagonal`/baseline-only picture — read it for the updated crossover table and practical guidance.
+
 ---
 
 ## 1. Tested / landed
