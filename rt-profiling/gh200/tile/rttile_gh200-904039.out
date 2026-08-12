@@ -1,0 +1,55 @@
+=== GPU determinism gate ===
+SC wavefront sweep determinism PASS: 64 identical launches (hash 0x9a543797d2295dea)
+SC diagonal_compact sweep determinism PASS: 64 identical launches (hash 0x9a543797d2295dea)
+SC tiled sweep determinism PASS: 64 identical launches (hash 0x9a543797d2295dea)
+GPU determinism gate PASSED -- all sweeps hash 0x9a543797d2295dea 0x9a543797d2295dea 0x9a543797d2295dea
+=== tile sweep (gh200): N*=224 B=56,112,224 tiles=0,8,14,16,28,32 nmu=3,6 ===
+device=gh200 phase=2 bin=/home1/11121/davela/athenak-rt-sc/build_gh200/src/athena launcher=['ibrun'] smoke=False out=/home1/11121/davela/athenak-rt-sc/rt-profiling/gh200/tile
+[phase2] N*=224  block ladder (>= 16) = [56, 112, 224]
+         sweeps=['tiled', 'wavefront', 'diagonal_compact']  nmu=1..6  n_repeat=3  nlim=50
+[phase2] warmup run (discarded)
+  B=56   nmb=64    tiled     nmu=3 rays=48  ZCPS off=608829800.0 on=105324700.0 slow=5.780503528611997
+  B=56   nmb=64    tiled     nmu=6 rays=168 ZCPS off=608829800.0 on=41928640.0 slow=14.520618841918077
+  B=56   nmb=64    tiled     nmu=3 rays=48  ZCPS off=608829800.0 on=89404110.0 slow=6.809863662867401
+  B=56   nmb=64    tiled     nmu=6 rays=168 ZCPS off=608829800.0 on=29938490.0 slow=20.33602229103739
+  B=56   nmb=64    tiled     nmu=3 rays=48  ZCPS off=608829800.0 on=143856100.0 slow=4.232213997181906
+  B=56   nmb=64    tiled     nmu=6 rays=168 ZCPS off=608829800.0 on=53062640.0 slow=11.473793991403367
+  B=56   nmb=64    tiled     nmu=3 rays=48  ZCPS off=608829800.0 on=137181900.0 slow=4.438120480908925
+  B=56   nmb=64    tiled     nmu=6 rays=168 ZCPS off=608829800.0 on=54555400.0 slow=11.15984485495478
+  B=56   nmb=64    wavefront nmu=3 rays=48  ZCPS off=608829800.0 on=120247000.0 slow=5.0631599956755675
+  B=56   nmb=64    wavefront nmu=6 rays=168 ZCPS off=608829800.0 on=43319460.0 slow=14.054418037528631
+  B=56   nmb=64    diagonal_compact nmu=3 rays=48  ZCPS off=608829800.0 on=101857600.0 slow=5.977264337663562
+  B=56   nmb=64    diagonal_compact nmu=6 rays=168 ZCPS off=608829800.0 on=41859520.0 slow=14.544595829096941
+  B=112  nmb=8     tiled     nmu=3 rays=48  ZCPS off=978361100.0 on=105530200.0 slow=9.270911075692077
+  B=112  nmb=8     tiled     nmu=6 rays=168 ZCPS off=978361100.0 on=26284100.0 slow=37.22254518891649
+  B=112  nmb=8     tiled     nmu=3 rays=48  ZCPS off=978361100.0 on=96554500.0 slow=10.132734362458509
+  B=112  nmb=8     tiled     nmu=6 rays=168 ZCPS off=978361100.0 on=31657910.0 slow=30.904159497578963
+  B=112  nmb=8     tiled     nmu=3 rays=48  ZCPS off=978361100.0 on=163335300.0 slow=5.989893795156344
+  B=112  nmb=8     tiled     nmu=6 rays=168 ZCPS off=978361100.0 on=57890060.0 slow=16.900329693906002
+  B=112  nmb=8     tiled     nmu=3 rays=48  ZCPS off=978361100.0 on=170294300.0 slow=5.745119478455826
+  B=112  nmb=8     tiled     nmu=6 rays=168 ZCPS off=978361100.0 on=61798310.0 slow=15.831518693634179
+  B=112  nmb=8     tiled     nmu=3 rays=48  ZCPS off=978361100.0 on=150560400.0 slow=6.498130318463554
+  B=112  nmb=8     tiled     nmu=6 rays=168 ZCPS off=978361100.0 on=58249320.0 slow=16.796094787029272
+  B=112  nmb=8     wavefront nmu=3 rays=48  ZCPS off=978361100.0 on=122575100.0 slow=7.981727936587447
+  B=112  nmb=8     wavefront nmu=6 rays=168 ZCPS off=978361100.0 on=42953440.0 slow=22.777246711788393
+  B=112  nmb=8     diagonal_compact nmu=3 rays=48  ZCPS off=978361100.0 on=87658970.0 slow=11.160992423251152
+  B=112  nmb=8     diagonal_compact nmu=6 rays=168 ZCPS off=978361100.0 on=25079180.0 slow=39.01088871326734
+  B=224  nmb=1     tiled     nmu=3 rays=48  ZCPS off=788786400.0 on=34019020.0 slow=23.18662912688255
+  B=224  nmb=1     tiled     nmu=6 rays=168 ZCPS off=788786400.0 on=28084060.0 slow=28.086622803113226
+  B=224  nmb=1     tiled     nmu=3 rays=48  ZCPS off=788786400.0 on=94756040.0 slow=8.3243917749201
+  B=224  nmb=1     tiled     nmu=6 rays=168 ZCPS off=788786400.0 on=31640100.0 slow=24.929959134136745
+  B=224  nmb=1     tiled     nmu=3 rays=48  ZCPS off=788786400.0 on=156313700.0 slow=5.046175735076324
+  B=224  nmb=1     tiled     nmu=6 rays=168 ZCPS off=788786400.0 on=58130000.0 slow=13.569351453638397
+  B=224  nmb=1     tiled     nmu=3 rays=48  ZCPS off=788786400.0 on=159808300.0 slow=4.935828739808883
+  B=224  nmb=1     tiled     nmu=6 rays=168 ZCPS off=788786400.0 on=60774070.0 slow=12.97899581186516
+  B=224  nmb=1     tiled     nmu=3 rays=48  ZCPS off=788786400.0 on=135049200.0 slow=5.840733599310473
+  B=224  nmb=1     tiled     nmu=6 rays=168 ZCPS off=788786400.0 on=57543160.0 slow=13.70773520258533
+  B=224  nmb=1     tiled     nmu=3 rays=48  ZCPS off=788786400.0 on=128081400.0 slow=6.158477343314486
+  B=224  nmb=1     tiled     nmu=6 rays=168 ZCPS off=788786400.0 on=53634020.0 slow=14.70682973232288
+  B=224  nmb=1     wavefront nmu=3 rays=48  ZCPS off=788786400.0 on=102472600.0 slow=7.697534755632237
+  B=224  nmb=1     wavefront nmu=6 rays=168 ZCPS off=788786400.0 on=37351440.0 slow=21.117964929866158
+  B=224  nmb=1     diagonal_compact nmu=3 rays=48  ZCPS off=788786400.0 on=49857660.0 slow=15.820766558237992
+  B=224  nmb=1     diagonal_compact nmu=6 rays=168 ZCPS off=788786400.0 on=33681190.0 slow=23.419196293242607
+wrote /home1/11121/davela/athenak-rt-sc/rt-profiling/gh200/tile/results_both.csv (42 rows)
+done in 1840.6s
+done -- results in /home1/11121/davela/athenak-rt-sc/rt-profiling/gh200/tile/

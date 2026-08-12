@@ -4,6 +4,11 @@
 (`d776ee93`), study scripts `c94cef03`. Run 2026-08-07. Data: `a100/results_phase1.csv`,
 `a100/results_wavefront.csv`, `a100/results_diagonal.csv`, `a100/kernel_resources.csv`.*
 
+> **Follow-up (2026-08-11):** this study is A100-only. The same measurement repeated on GH200 and
+> B200 is in **`ARCH_SCALING.md`** (+ `{gh200,b200}/SUMMARY.md`), which shows the sweep crossover
+> and the hydro/RT gap law are essentially architecture-invariant, and that radiation scales across
+> GPU generations at least as well as hydro.
+
 ## TL;DR
 
 - **Mesh design is memory-driven.** With 16³ meshblocks and the heaviest angular order (nmu=6, 168
