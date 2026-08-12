@@ -34,6 +34,7 @@ def _run_capture(inputfile, extra=None):
         "sc_determinism_diagonal_compact.athinput",
         "sc_determinism_wavefront_coalesced.athinput",
         "sc_determinism_angle_inner.athinput",
+        "sc_determinism_hoist_wavefront.athinput",
     ],
 )
 def test_sc_sweep_determinism(deck):
@@ -72,6 +73,20 @@ def test_sc_wavefront_coalesced_matches_wavefront():
     assert h_w is not None and h_c is not None, (
         f"could not parse PASS hash (wavefront={h_w}, coalesced={h_c})")
     assert h_w == h_c, f"wavefront_coalesced hash {h_c} != wavefront {h_w} -- NOT bit-identical"
+
+
+def test_sc_hoist_matches_baseline():
+    """sc_hoist=true (ledger I3: per-ray precomputed interpolation invariants read from sc_inv_)
+    must reproduce the baseline wavefront (sc_hoist=false) BIT-FOR-BIT. The table is built by the
+    same ComputeSCAngleInv() the recompute path uses, on the same dx/mu, so GatherSolveSC runs the
+    identical FP ops (use_ali=false). The interior XOR-hash of both must match -- the I3 gate."""
+    rc_b, out_b = _run_capture("inputs/sc_determinism_wavefront.athinput")
+    rc_h, out_h = _run_capture("inputs/sc_determinism_hoist_wavefront.athinput")
+    assert rc_b == 0 and rc_h == 0, f"athena crashed:\n{out_b[-1000:]}\n{out_h[-1000:]}"
+    h_b, h_h = _pass_hash(out_b), _pass_hash(out_h)
+    assert h_b is not None and h_h is not None, (
+        f"could not parse PASS hash (baseline={h_b}, hoist={h_h})")
+    assert h_b == h_h, f"sc_hoist hash {h_h} != baseline wavefront {h_b} -- NOT bit-identical"
 
 
 def _grep(out, pat):

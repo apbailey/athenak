@@ -92,6 +92,49 @@ void SC::BuildWavefrontIndex() {
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn void SC::BuildAngleInvTable
+//! \brief Precompute the per-ray SC interpolation invariants (ledger I3) into sc_inv_.
+//! One device par_for over the flat ray index angg, calling the SAME ComputeSCAngleInv() the
+//! recompute path uses, so the table is bit-identical to the inline computation. The weights depend
+//! on the cell size dx; on the uniform mesh this opt requires, dx is identical across meshblocks, so
+//! meshblock-0's dx is used. Packed into sc_inv_(angg, 0..9) = [sx,sy,sz,axis, c0,c1,c2,c3, pdx,pamu].
+
+void SC::BuildAngleInvTable() {
+  int ndim = pang->ndim;
+  int nang = pang->nang;
+  int nangt1 = nang_tot - 1;
+  auto &mu = pang->mu;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  Kokkos::realloc(sc_inv_, nang_tot, 10);
+  auto sci_ = sc_inv_;
+  par_for("sc_build_inv", DevExeSpace(), 0, nangt1,
+  KOKKOS_LAMBDA(int angg) {
+    int oct = angg / nang;
+    int a = angg - oct*nang;
+    Real mux = mu.d_view(oct,a,0);
+    Real muy = (ndim >= 2) ? mu.d_view(oct,a,1) : 0.0;
+    Real muz = (ndim == 3) ? mu.d_view(oct,a,2) : 0.0;
+    int sx = (mux > 0.0) ? 1 : -1;
+    int sy = (ndim >= 2) ? ((muy > 0.0) ? 1 : -1) : 0;
+    int sz = (ndim == 3) ? ((muz > 0.0) ? 1 : -1) : 0;
+    Real dx1 = mbsize.d_view(0).dx1;
+    Real dx2 = mbsize.d_view(0).dx2;
+    Real dx3 = mbsize.d_view(0).dx3;
+    SCRayInv inv = ComputeSCAngleInv(mux,muy,muz, dx1,dx2,dx3, ndim, sx,sy,sz);
+    sci_(angg,0) = static_cast<Real>(inv.sx);
+    sci_(angg,1) = static_cast<Real>(inv.sy);
+    sci_(angg,2) = static_cast<Real>(inv.sz);
+    sci_(angg,3) = static_cast<Real>(inv.axis);
+    sci_(angg,4) = inv.c0;
+    sci_(angg,5) = inv.c1;
+    sci_(angg,6) = inv.c2;
+    sci_(angg,7) = inv.c3;
+    sci_(angg,8) = inv.pdx;
+    sci_(angg,9) = inv.pamu;
+  });
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void SC::FormalSolutionWavefront
 
 void SC::FormalSolutionWavefront() {
@@ -175,41 +218,80 @@ void SC::FormalSolutionWavefront() {
     int nx1_ = nx1;
     int nx12 = nx1*nx2;
     int hmax = nx1 + nx2 + nx3 - 3;
-    for (int h = 0; h <= hmax; ++h) {
-      int lo = wf_plane_start_[h];
-      int cnt = wf_plane_start_[h+1] - lo;   // exact cell count on plane h (no off-plane slots)
-      if (cnt <= 0) continue;
-      par_for("sc_sweep3d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, cnt-1,
-      KOKKOS_LAMBDA(int m, int angg, int c) {
-        int lin = wfc_(lo + c);
-        int li3 = lin / nx12;
-        int r = lin - li3*nx12;
-        int li2 = r / nx1_;
-        int li1 = r - li2*nx1_;
-        int oct = angg / nang;
-        int a = angg - oct*nang;
-        Real mux = mu.d_view(oct,a,0);
-        Real muy = mu.d_view(oct,a,1);
-        Real muz = mu.d_view(oct,a,2);
-        int sx = (mux > 0.0) ? 1 : -1;
-        int sy = (muy > 0.0) ? 1 : -1;
-        int sz = (muz > 0.0) ? 1 : -1;
-        int i = (sx > 0) ? (is + li1) : (ie - li1);
-        int j = (sy > 0) ? (js + li2) : (je - li2);
-        int k = (sz > 0) ? (ks + li3) : (ke - li3);
-        Real dx1v = mbsize.d_view(m).dx1;
-        Real dx2v = mbsize.d_view(m).dx2;
-        Real dx3v = mbsize.d_view(m).dx3;
-        Real a1 = 0.0;
-        Real I = UpdateCellSC(chi_,srad_,ir_,m,angg,
-                              i,j,k, sx,sy,sz,
-                              mux,muy,muz,
-                              dx1v,dx2v,dx3v, ndim,ks,js, &a1);
-        ir_(m,angg,k,j,i) = I;
-        if (accumulate) {
-          Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
-        }
-      });
+    if (sc_hoist) {
+      // I3 hoisted variant: read the per-ray invariants from sc_inv_ (built once) instead of
+      // recomputing lx/ly/lz/lmin + the axis branch + weights per cell. Bit-identical to the else
+      // branch below (the table came from the same ComputeSCAngleInv on the same dx/mu); the else
+      // branch is left verbatim so the default (sc_hoist=false) sweep is byte-identical.
+      auto sci_ = sc_inv_;
+      for (int h = 0; h <= hmax; ++h) {
+        int lo = wf_plane_start_[h];
+        int cnt = wf_plane_start_[h+1] - lo;
+        if (cnt <= 0) continue;
+        par_for("sc_sweep3d_hoist", DevExeSpace(), 0, nmb1, 0, nangt1, 0, cnt-1,
+        KOKKOS_LAMBDA(int m, int angg, int c) {
+          int lin = wfc_(lo + c);
+          int li3 = lin / nx12;
+          int r = lin - li3*nx12;
+          int li2 = r / nx1_;
+          int li1 = r - li2*nx1_;
+          SCRayInv inv;
+          inv.sx = static_cast<int>(sci_(angg,0));
+          inv.sy = static_cast<int>(sci_(angg,1));
+          inv.sz = static_cast<int>(sci_(angg,2));
+          inv.axis = static_cast<int>(sci_(angg,3));
+          inv.c0 = sci_(angg,4); inv.c1 = sci_(angg,5);
+          inv.c2 = sci_(angg,6); inv.c3 = sci_(angg,7);
+          inv.pdx = sci_(angg,8); inv.pamu = sci_(angg,9);
+          int i = (inv.sx > 0) ? (is + li1) : (ie - li1);
+          int j = (inv.sy > 0) ? (js + li2) : (je - li2);
+          int k = (inv.sz > 0) ? (ks + li3) : (ke - li3);
+          Real a1 = 0.0;
+          Real I = GatherSolveSC<false>(chi_,srad_,ir_,m,angg, i,j,k, inv, ndim,ks,js, &a1);
+          ir_(m,angg,k,j,i) = I;
+          if (accumulate) {
+            int a = angg - (angg/nang)*nang;
+            Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+          }
+        });
+      }
+    } else {
+      for (int h = 0; h <= hmax; ++h) {
+        int lo = wf_plane_start_[h];
+        int cnt = wf_plane_start_[h+1] - lo;   // exact cell count on plane h (no off-plane slots)
+        if (cnt <= 0) continue;
+        par_for("sc_sweep3d", DevExeSpace(), 0, nmb1, 0, nangt1, 0, cnt-1,
+        KOKKOS_LAMBDA(int m, int angg, int c) {
+          int lin = wfc_(lo + c);
+          int li3 = lin / nx12;
+          int r = lin - li3*nx12;
+          int li2 = r / nx1_;
+          int li1 = r - li2*nx1_;
+          int oct = angg / nang;
+          int a = angg - oct*nang;
+          Real mux = mu.d_view(oct,a,0);
+          Real muy = mu.d_view(oct,a,1);
+          Real muz = mu.d_view(oct,a,2);
+          int sx = (mux > 0.0) ? 1 : -1;
+          int sy = (muy > 0.0) ? 1 : -1;
+          int sz = (muz > 0.0) ? 1 : -1;
+          int i = (sx > 0) ? (is + li1) : (ie - li1);
+          int j = (sy > 0) ? (js + li2) : (je - li2);
+          int k = (sz > 0) ? (ks + li3) : (ke - li3);
+          Real dx1v = mbsize.d_view(m).dx1;
+          Real dx2v = mbsize.d_view(m).dx2;
+          Real dx3v = mbsize.d_view(m).dx3;
+          Real a1 = 0.0;
+          Real I = UpdateCellSC(chi_,srad_,ir_,m,angg,
+                                i,j,k, sx,sy,sz,
+                                mux,muy,muz,
+                                dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+          ir_(m,angg,k,j,i) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
+          }
+        });
+      }
     }
   }
 }

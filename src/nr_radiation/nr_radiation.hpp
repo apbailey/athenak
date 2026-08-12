@@ -88,6 +88,14 @@ class SC {
   // CC exchange (which assumes angle=index1) is bridged SC-side via a normal-layout companion
   // ir_normal transposed around the UNCHANGED PackAndSendCC/RecvAndUnpackCC calls.
   bool ir_angle_inner;
+  // <nr_radiation>/sc_hoist = false (default) | true. When true, the angle-only SC interpolation
+  // invariants (dominant axis, bilinear weights c0..c3, path-length dx_dom/|mu_dom|) are precomputed
+  // ONCE per ray into sc_inv_ and read by the wavefront sweep instead of being recomputed per cell
+  // (ledger I3 — removes fabs/fmin/divides + the axis branch from the hot loop). Opt-in; requires
+  // sweep=wavefront, ndim==3, uniform mesh, ir_layout=normal. The weights depend on dx (constant only
+  // on a uniform mesh); the default (false) path is byte-identical (host-scope dispatch — a sibling
+  // par_for launch). Bit-exact vs the recompute path (GatherSolveSC reproduces UpdateCellSC exactly).
+  bool sc_hoist;
 
   // iteration control
   int iter_max;
@@ -160,6 +168,12 @@ class SC {
   // INSIDE one device kernel and needs the offsets on device to slice wf_cell_ per plane. Built once
   // alongside wf_cell_ in BuildWavefrontIndex(); empty until then.
   DvceArray1D<int> wf_plane_start_dev_;
+
+  // I3 precomputed per-ray SC interpolation invariants (sc_hoist=true only): shape (nang_tot, 10),
+  // columns [sx,sy,sz,axis (stored as Real, cast to int), c0,c1,c2,c3, pdx,pamu]. Packed layout of
+  // SCRayInv (sc_interp.hpp) so the header need not include it. Built once by BuildAngleInvTable();
+  // read by the wavefront sweep's hoisted variant. Empty (size 0) unless sc_hoist.
+  DvceArray2D<Real> sc_inv_;
 
   // inflow intensity table (nang_tot, 6 faces): default 0 = vacuum edges
   DualArray2D<Real> i_in;
@@ -234,6 +248,11 @@ class SC {
   //! Precompute the compact per-hyperplane cell-index map used by the 2D/3D wavefront sweep
   //! (fills wf_cell_ / wf_plane_start_). Static in the meshblock interior dims, so built once.
   void BuildWavefrontIndex();
+
+  //! Precompute the per-ray SC interpolation invariants into sc_inv_ (ledger I3; sc_hoist=true).
+  //! One device par_for over angg calling the same ComputeSCAngleInv the recompute path uses, so
+  //! the table is bit-identical to the inline computation. Uniform-mesh only (uses meshblock-0 dx).
+  void BuildAngleInvTable();
 
  private:
   MeshBlockPack* pmy_pack;

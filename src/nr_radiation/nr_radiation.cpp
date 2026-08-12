@@ -107,6 +107,24 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     }
   }
 
+  // sc_hoist (ledger I3): precompute the angle-only SC interpolation invariants per ray (sc_inv_)
+  // instead of recomputing them per cell in the wavefront sweep. Opt-in; the default (false) path is
+  // byte-identical. The precomputed weights depend on dx (constant only on a uniform mesh) and only
+  // the wavefront-3D-normal path reads sc_inv_, so guard to that regime (silent no-op otherwise).
+  sc_hoist = pin->GetOrAddBoolean("nr_radiation", "sc_hoist", false);
+  if (sc_hoist) {
+    auto &ind = ppack->pmesh->mb_indcs;
+    bool is_3d = (ind.nx3 > 1);
+    if (sweep_method != "wavefront" || !is_3d || ppack->pmesh->multilevel || ir_angle_inner) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+        << "<nr_radiation>/sc_hoist=true requires sweep=wavefront, a 3D problem, a uniform "
+        << "(single-level) mesh, and ir_layout=normal; got sweep='" << sweep_method << "', 3D="
+        << is_3d << ", multilevel=" << ppack->pmesh->multilevel << ", ir_angle_inner="
+        << ir_angle_inner << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+
   // Iteration control
   iter_max = pin->GetOrAddInteger("nr_radiation", "iter_max", 100);
   itermin  = pin->GetOrAddInteger("nr_radiation", "itermin", 2);
@@ -289,6 +307,9 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   pbval_ir->InitializeBuffers(nang_tot);
   pbval_srad = new MeshBoundaryValuesCC(ppack, pin, false);
   pbval_srad->InitializeBuffers(1);
+
+  // I3: precompute the per-ray SC interpolation invariants (needs pang + mb_size, both ready here).
+  if (sc_hoist) { BuildAngleInvTable(); }
 
   dtnew = std::numeric_limits<Real>::max();
 }
