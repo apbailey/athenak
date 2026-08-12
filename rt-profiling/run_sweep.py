@@ -294,7 +294,7 @@ def phase1_memfill():
     for N in sorted(set(N_LIST)):
         if N % B != 0:
             print(f"  N={N} not divisible by B={B}; skipping"); continue
-        cfg = dict(nmu=nmu, sweep=sweep, extra=f"ir_layout = {IR_LAYOUT}\n")
+        cfg = dict(nmu=nmu, sweep=sweep, extra={"ir_layout": IR_LAYOUT})
         (out, _), stats = run_with_monitor(
             lambda: rc.run_case(f"memfill_N{N}", N, B, NLIM_MEMFILL, rad=cfg, perf=False),
             f"memfill_N{N}")
@@ -338,7 +338,7 @@ def phase2_sweep(N_star):
         print("[phase2] warmup run (discarded)")
         run_with_monitor(lambda: rc.run_case("warmup", N_star, B_list[-1], 3,
                          rad=dict(nmu=1, sweep=SWEEPS[0],
-                                  extra=f"ir_layout = {IR_LAYOUT}\n"), perf=False), "warmup")
+                                  extra={"ir_layout": IR_LAYOUT}), perf=False), "warmup")
     for B in B_list:
         nmb = (N_star // B) ** 3
         cells = B ** 3
