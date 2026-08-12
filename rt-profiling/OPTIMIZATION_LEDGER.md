@@ -34,6 +34,7 @@ old `diagonal`/baseline-only picture — read it for the updated crossover table
 | T8 | **Cross-architecture confirmation** (GH200 + B200 on Vista; all three sweeps, full block×ray grid) | *measurement only* | 📊 | `diagonal_compact` ≥ `diagonal` on **30/30** B200 points and **34/36** GH200 points, reproducing the A100 A/B on two more architectures. Crossover is invariant in **meshblock count** (dc wins nmb ≥ 64, wf wins nmb ≤ 8) on all three. The hydro/RT gap is **architecture-nearly-invariant**: `gap ≈ k·rays` with k = 2.99/2.50/2.25 % (A100/GH200/B200) at B=16 — block size moves k ~4×, architecture ~1.4×. Radiation scales A100→B200 by **2.67×** (B=16) / **3.52×** (big blocks) vs hydro's 1.93×/3.28×, i.e. **the gap does not widen on newer hardware**. One real arch effect: diagonal registers 94 → **122** on sm_100. | `ARCH_SCALING.md`; `{b200,gh200}/SUMMARY.md`; `arch/*.png` |
 | T9 | **Boundary-lag measurement** — iterations to converge vs domain decomposition (`sc_lag` pgen + `lag_study.py`) | `src/pgen/unit_tests/sc_lag.cpp`, `tst/inputs/sc_lag.athinput` | 📊 | The sweep is meshblock-local, so light advances one block per iteration and **`niter = 3·(blocks per side) − 1`** exactly (measured 2/5/11/22 for 1/2/4/8). Independent of angular order **and** of `iter_tol` — it is a geometric count, not a decay rate. Saturates at ~4 when `τ_blk ≳ 3` (absorbed before crossing). Folding it into measured `ZCPS_rad`: at 16³ blocks an optically **thin** problem costs **28× (B200) / 17× (GH200) / 13× (A100)** more total radiation time than one big block — **inverting the small-block guidance**, which holds only in the thick regime. Every throughput row above was taken at `iter_max=1` and therefore does not include this. | `LAG_STUDY.md`; `lag/lag_results.csv` |
 | T10 | **`Kokkos::AUTO` team-size audit** (GH200, single 224³ block, AUTO/64/128/256/512 × diagonal_compact and tiled) | *measurement only* | 📊 | Run to test whether AUTO explains the tiled `tile_size=0` regression. **It does not** — AUTO resolves to 128 for BOTH kernels (identical to 4 s.f.), and forcing them to match leaves the gap at 0.680. **But it found something bigger: AUTO is up to 2.6× suboptimal at starved configs.** At 48 rays/1 block, ts=512 beats AUTO by **1.91× (diagonal_compact)** and **2.61× (tiled)**; at 168 rays, 1.00× and 1.18×. So I1's "AUTO optimal" verdict holds only at the angular order it was measured at (nmu=6). The `tile_size=0` gap is a per-kernel team-size *sensitivity* difference, root cause still unknown (not registers: tiled 88 vs diagonal 94). | `TILING_REPORT.md` §7; `gh200/teamsize/`; job 904561 |
+| T11 | **I7 × I2 composition** (`sweep=tiled` + `ir_layout=angle_inner`, `tile_na` sweep) | `formal_solution.cpp` `FormalSolutionTiledAngleInner` | 📊❌ | **They do not compose — they are alternatives.** Both spend the SAME resource: I7 turns angles into teams (`league = ntile·nmb·nang_tot`), I2 turns angles into lanes. `tile_na` is the exchange rate and the trade loses both ways — large `tile_na` collapses the league 24–28× (GH200 B=224: 24,696 → 882 teams; B200 B=256: 8,064 → **96**), small `tile_na` shrinks the coalesced run to nothing. GH200 B=112/168 rays vs baseline: I2 alone **1.22×**, I7 alone **1.40×**, composed best (`tile_na=2`) **1.21×**, degrading monotonically to 0.85× at `tile_na=8`. Kernel is bit-identical (`0x9a543797d2295dea`), just slower. **At large blocks prefer I7.** | `TILING_REPORT.md` §8; `gh200/tilena/`; jobs 907293/4, 907414 |
 
 ---
 
@@ -94,11 +95,10 @@ angles→rays (3D Bruls type-A): nmu {1..6} → {8,24,48,80,120,168} total.
   is now the most direct test** — it is the only proposal that raises team count at large blocks
   without either the I1 intra-plane race or the retired Lever-1 cooperative kernel, and it is a no-op
   at B=16 where the diagonal already wins. If it holds up, one sweep replaces the crossover.
-- **Sequence the sweep work:** I7 (`sweep=tiled`) and I2 (`ir_layout=angle_inner`) attack *different*
-  bottlenecks in the *same* regime — I7 fixes team starvation, I2 fixes the gather — and both win
-  most at large blocks, so **the open question is whether they compose**. Neither has been measured
-  with the other enabled. (An earlier draft of this note proposed I3 as a prerequisite for register
-  relief; I3 has since been measured at ~0/negative and retired, so that reasoning is void.)
+- **I7 and I2 are ALTERNATIVES, not a sequence (T11, measured).** Both consume the single angle
+  dimension — I7 as teams, I2 as lanes — so enabling both is strictly worse than either. At large
+  blocks prefer I7 (1.40× vs 1.22× on GH200 B=112). The earlier "sequence I7 then I2" plan is void,
+  as is the older suggestion that I3 would be a prerequisite (I3 measured ~0/negative, retired).
 - **Whole-run vs fenced:** always re-derive throughput from `zcps_on/zcps_off`; treat `rad_cells_per_s`
   as diagnostic only (§Golden rule).
 - **Production regime reminder — REVISED by T9.** The "real runs use many 16–32³ meshblocks" premise
@@ -135,6 +135,7 @@ decks. Do it in one pass, gated by the determinism suite (hashes must not move f
 | I2 `ir_layout=angle_inner` | **keep — opt-in** (real win, large blocks) | keep; `ir_normal` bridge + FATAL guards stay until AMR increment. |
 | I1 `sweep=diagonal_compact` | **keep — opt-in** (wins small/mid blocks) | keep; `diag_team_size` knob = AUTO-optimal, could drop the knob. |
 | I7 `sweep=tiled` | **keep — opt-in** (best sweep at every large block on GH200+B200) | keep; shares `BuildPlaneIndex`/`diag_team_size` with I1. Candidate to *replace* `diagonal_compact` once the `tile_size=0` gap is understood. |
+| I7×I2 `FormalSolutionTiledAngleInner` | **delete-after-tests** (measured: does not compose, T11) | remove the kernel + `tile_na` + the `tiled` arm of the angle_inner validator; keep the finding in `TILING_REPORT.md` §8. |
 | `sweep=jacobi` | **keep — opt-in** (reference/uncoupled) | keep (small). |
 | T4 GS-ALI (`ali_mode=gauss_seidel`, `gs_scatter`) | **keep — opt-in** (convergence, orthogonal) | keep. |
 | I3 `sc_hoist` | **delete-after-tests** (measured ~0/neg) | remove the flag + `sc_inv_` + `BuildAngleInvTable` + `sc_sweep3d_hoist` branch; **but KEEP** the `ComputeSCAngleInv`/`GatherSolveSC` refactor (bit-exact, DRY, enables the GS-scatter dedup). |

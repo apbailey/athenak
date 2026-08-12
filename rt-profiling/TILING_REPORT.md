@@ -255,7 +255,52 @@ A100 conclusion does not generalise across angular order, and the ledger has bee
 league is large (24,696 teams at t=16), so starvation is gone and team size should matter much
 less — but nobody has checked. If it does help, the 1.63× win is a floor, not a ceiling.
 
-## 8. Status and caveats
+## 8. Does it compose with I2 (`angle_inner`)? — No, and the reason is structural
+
+I7 and I2 both win most at large blocks and fix *different* bottlenecks (team starvation vs
+gather coalescing), so composing them looked like free multiplication. `sweep=tiled` +
+`ir_layout=angle_inner` was implemented (`FormalSolutionTiledAngleInner`, bit-identical, hash
+`0x9a543797d2295dea` on CPU and on both GPUs) and measured. **It does not compose.**
+
+GH200, B=112, single meshblock, vs the wavefront/normal baseline:
+
+| config | 48 rays | 168 rays |
+|---|--:|--:|
+| baseline `wavefront` / `normal` | 1.00× | 1.00× |
+| **I2 alone** (`wavefront` / `angle_inner`) | 1.06× | 1.22× |
+| **I7 alone** (`tiled` / `normal`) | **1.40×** | **1.40×** |
+| both, `tile_na=2` | 1.08× | 1.21× |
+| both, `tile_na=4` | 0.69× | 1.14× |
+| both, `tile_na=8` | 0.49× | 0.85× |
+| both, `tile_na=32` | — | ~0.8× (measured at N★) |
+
+The composed version is **monotonically worse as `tile_na` grows**, and even at its best point
+(`tile_na=2`) it only ties I2 alone and stays well below I7 alone.
+
+**Why — the two optimisations spend the same resource.** There is exactly one angle dimension.
+I7 spends it on the *league*, turning angles into teams (`ntile·nmb·nang_tot`) — that is what
+cures the diagonal's starvation. I2 spends it on the *lanes*, so consecutive threads walk
+consecutive angles — that is what makes the gather coalesce. `tile_na` is the exchange rate
+between them, and the sweep shows the trade is strictly losing in both directions:
+
+* large `tile_na` → wide coalescing, but the league collapses by `tile_na`× (at 32 that is a
+  24–28× reduction: 24,696 → 882 teams on GH200 at B=224; 8,064 → 96 on B200 at B=256, which is
+  *worse starvation than the diagonal tiling exists to fix*);
+* small `tile_na` → league preserved, but the coalesced run shrinks toward a single element,
+  which is the ordinary uncoalesced gather with extra index arithmetic on top.
+
+So **I7 and I2 are alternatives, not complements.** At large blocks the better single choice is
+I7 (1.40× vs 1.22× here). This supersedes the "sequence I7 then I2" plan: there is nothing to
+sequence.
+
+*Two mistakes on the way to this result, recorded because both cost a job:* the first attempt
+fixed `tile_na=32` — the value that maximally sacrifices team count — and so measured one bad
+operating point rather than the hypothesis; and it reused the normal-layout N★, which OOMs under
+`angle_inner` because the `ir_normal` companion doubles `ir` (hence the separate `N*_ai` in
+REPORT2). Neither invalidated the idea; the `tile_na` sweep at a reduced mesh is what settled it.
+
+
+## 9. Status and caveats
 
 - **Not applicable to `ali_mode=gauss_seidel`.** `SweepUpdateGS` needs the global center-out
   completion-shell ordering to know when a cell has received its last octant; tiles break that.
@@ -268,7 +313,7 @@ less — but nobody has checked. If it does help, the 1.63× win is a floor, not
   angle-major (ledger I2+I8), so it waits on that experiment.
 - Single-rank throughout. The MPI exchange has not been measured.
 
-## 9. Reproduce
+## 10. Reproduce
 
 ```bash
 python3 rt-profiling/tile_schematics.py          # figures in rt-profiling/tile/
