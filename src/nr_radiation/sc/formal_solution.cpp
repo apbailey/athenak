@@ -85,7 +85,11 @@ void SC::FormalSolution() {
   if (sweep_method == "diagonal" || sweep_method == "diagonal_compact") {
     FormalSolutionDiagonal();
   } else if (sweep_method == "tiled") {
-    FormalSolutionTiled();
+    if (ir_angle_inner) {
+      FormalSolutionTiledAngleInner();   // I7 x I2 composed
+    } else {
+      FormalSolutionTiled();
+    }
   } else if (sweep_method == "jacobi") {
     FormalSolutionJacobi();
   } else if (sweep_method == "wavefront_coalesced") {
@@ -822,6 +826,131 @@ void SC::FormalSolutionTiled() {
           ir_(m,angg,k,j,i) = I;
           if (accumulate) {
             Kokkos::atomic_add(&lam_(m,k,j,i), w * a1);
+          }
+        });
+        tmember.team_barrier();
+      }
+    });
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::FormalSolutionTiledAngleInner
+//! \brief I7 x I2: the tiled (KBA) sweep run directly on the angle-innermost `ir`.
+//!
+//! The two optimisations pull in opposite directions on their own. Tiling (I7) puts the ANGLE in
+//! the league to manufacture teams (`ntile*nmb*nang_tot`), which fixes the diagonal's starvation at
+//! large blocks. Coalescing (I2) needs consecutive THREADS to walk consecutive angles, because
+//! angle is the contiguous dim under angle_inner. One angle per team gives lanes that vary over
+//! cells instead -- which under angle_inner is *worse* than the normal layout, since adjacent cells
+//! are then `nang_tot` apart (the regression documented in ledger I2).
+//!
+//! The resolution is to split the angles across the league in BLOCKS of `tile_na` rather than one
+//! per team: league = ntile * nmb * ceil(nang_tot/tile_na), and the team's inner range covers
+//! (plane cells x tile_na angles) with ANGLE FASTEST. Consecutive threads then read consecutive
+//! `angg` (contiguous), while the team count stays proportional to the tile count. Total work and
+//! total threads are unchanged versus FormalSolutionTiled -- only the partitioning moves.
+//!
+//! tile_na is the coalescing width; 32 (a warp) is the default. nang_tot need not divide it (the
+//! tail is masked). 3D only, guaranteed by the ir_layout=angle_inner validator.
+//! Bit-identical to every other sweep: the per-cell arithmetic and the causal order are unchanged.
+
+void SC::FormalSolutionTiledAngleInner() {
+  if (tile_cell_.size() == 0) { BuildTileIndex(); }
+
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb = pmy_pack->nmb_thispack;
+  int ndim = pang->ndim;
+  int nang = pang->nang;
+  int nang_tot_ = nang_tot;
+  auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto ir_ = ir;             // angle-innermost (m,k,j,i,angg)
+  auto chi_ = chi;
+  auto srad_ = srad;
+  auto lam_ = lamstr;
+  bool accumulate = use_ali;
+
+  auto tcell_ = tile_cell_;
+  auto tstart_ = tile_plane_start_dev_;
+  auto tpc_ = tp_cell_;
+  const int tx1 = tx1_, tx2 = tx2_, tx3 = tx3_;
+  const int nt1 = nt1_, nt2 = nt2_;
+  const int nt12 = nt1_ * nt2_;
+  const int tx12 = tx1_ * tx2_;
+  const int hmax_tile = hmax_tile_;
+  const int na = tile_na;
+  const int nablk = (nang_tot_ + na - 1) / na;   // angle blocks per (tile, meshblock)
+
+  for (int H = 0; H <= hmax_tplane_; ++H) {
+    const int tlo = tp_start_[H];
+    const int ntile = tp_start_[H+1] - tlo;
+    if (ntile <= 0) continue;
+
+    const int league_size = ntile * nmb * nablk;
+    Kokkos::TeamPolicy<> policy = (diag_team_size > 0)
+        ? Kokkos::TeamPolicy<>(DevExeSpace(), league_size, diag_team_size)
+        : Kokkos::TeamPolicy<>(DevExeSpace(), league_size, Kokkos::AUTO);
+    Kokkos::parallel_for("sc_sweep_tiled_ai", policy,
+    KOKKOS_LAMBDA(const TeamMember_t &tmember) {
+      const int lid = tmember.league_rank();
+      const int t = lid / (nmb * nablk);
+      const int rem = lid - t * (nmb * nablk);
+      const int m = rem / nablk;
+      const int ablk = rem - m * nablk;
+
+      const int tlin = tpc_(tlo + t);
+      const int tc = tlin / nt12;
+      const int tr = tlin - tc * nt12;
+      const int tb = tr / nt1;
+      const int ta = tr - tb * nt1;
+
+      for (int h = 0; h <= hmax_tile; ++h) {
+        const int lo = tstart_(h);
+        const int cnt = tstart_(h + 1) - lo;
+        // (cells x angles) with ANGLE FASTEST -- this is the coalescing
+        Kokkos::parallel_for(Kokkos::TeamThreadRange(tmember, cnt * na),
+        [&](const int idx) {
+          const int c = idx / na;
+          const int angg = ablk * na + (idx - c * na);
+          if (angg >= nang_tot_) return;          // tail when na does not divide nang_tot
+
+          const int lin = tcell_(lo + c);
+          const int l3 = lin / tx12;
+          const int r = lin - l3 * tx12;
+          const int l2 = r / tx1;
+          const int l1 = r - l2 * tx1;
+
+          const int oct = angg / nang;
+          const int a = angg - oct * nang;
+          Real mux = mu.d_view(oct,a,0);
+          Real muy = mu.d_view(oct,a,1);
+          Real muz = mu.d_view(oct,a,2);
+          int sx = (mux > 0.0) ? 1 : -1;
+          int sy = (muy > 0.0) ? 1 : -1;
+          int sz = (muz > 0.0) ? 1 : -1;
+          const int i0 = (sx > 0) ? (is + ta*tx1) : (ie - ta*tx1);
+          const int j0 = (sy > 0) ? (js + tb*tx2) : (je - tb*tx2);
+          const int k0 = (sz > 0) ? (ks + tc*tx3) : (ke - tc*tx3);
+          const int i = (sx > 0) ? (i0 + l1) : (i0 - l1);
+          const int j = (sy > 0) ? (j0 + l2) : (j0 - l2);
+          const int k = (sz > 0) ? (k0 + l3) : (k0 - l3);
+
+          Real dx1v = mbsize.d_view(m).dx1;
+          Real dx2v = mbsize.d_view(m).dx2;
+          Real dx3v = mbsize.d_view(m).dx3;
+          Real a1 = 0.0;
+          Real I = UpdateCellSC<true>(chi_,srad_,ir_,m,angg,
+                                      i,j,k, sx,sy,sz,
+                                      mux,muy,muz,
+                                      dx1v,dx2v,dx3v, ndim,ks,js, &a1);
+          ir_(m,k,j,i,angg) = I;
+          if (accumulate) {
+            Kokkos::atomic_add(&lam_(m,k,j,i), wmu.d_view(a) * a1);
           }
         });
         tmember.team_barrier();

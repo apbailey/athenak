@@ -87,6 +87,14 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   }
   // sweep=diagonal_compact and sweep=tiled: optional explicit TeamPolicy team size
   // (0 => Kokkos::AUTO). Both are team-per-(meshblock,angle) kernels, so they share the knob.
+  // sweep=tiled + ir_layout=angle_inner: angles per team (the coalescing width). Default 32 = one
+  // warp of consecutive angles. Only read on that combined path.
+  tile_na = pin->GetOrAddInteger("nr_radiation", "tile_na", 32);
+  if (tile_na < 1) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/tile_na must be >= 1; got " << tile_na << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
   diag_team_size = pin->GetOrAddInteger("nr_radiation", "diag_team_size", 0);
   if (diag_team_size < 0) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
@@ -110,10 +118,12 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     if (ir_angle_inner) {
       auto &ind = ppack->pmesh->mb_indcs;
       bool is_3d = (ind.nx3 > 1);
-      if (sweep_method != "wavefront" || !is_3d || ppack->pmesh->multilevel) {
+      if ((sweep_method != "wavefront" && sweep_method != "tiled")
+          || !is_3d || ppack->pmesh->multilevel) {
         std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-          << "<nr_radiation>/ir_layout=angle_inner requires sweep=wavefront, a 3D problem, and a "
-          << "uniform (single-level) mesh; got sweep='" << sweep_method << "', 3D=" << is_3d
+          << "<nr_radiation>/ir_layout=angle_inner requires sweep=wavefront or sweep=tiled, a 3D "
+          << "problem, and a uniform (single-level) mesh; got sweep='" << sweep_method
+          << "', 3D=" << is_3d
           << ", multilevel=" << ppack->pmesh->multilevel << std::endl;
         std::exit(EXIT_FAILURE);
       }

@@ -36,6 +36,7 @@ def _run_capture(inputfile, extra=None):
         "sc_determinism_angle_inner.athinput",
         "sc_determinism_hoist_wavefront.athinput",
         "sc_determinism_tiled.athinput",
+        "sc_determinism_tiled_angle_inner.athinput",
     ],
 )
 def test_sc_sweep_determinism(deck):

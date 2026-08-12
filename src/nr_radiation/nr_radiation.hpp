@@ -82,6 +82,10 @@ class SC {
   // diagonal_compact exactly). Must divide the meshblock interior dims; validated at
   // construction. See rt-profiling/TILED_SWEEP_DESIGN.md.
   int tile_size;
+  // sweep=tiled + ir_layout=angle_inner only: angles per team. Consecutive threads within a team
+  // walk consecutive angles, so this is the coalescing width; 32 (a warp) is the default. Angles
+  // are split across the league so the tile-derived team count is preserved.
+  int tile_na;
   // sweep=diagonal_compact only: explicit TeamPolicy team size (0 = Kokkos::AUTO, the default).
   // The diagonal kernel is latency-bound with few teams (nmb*nang_tot); a larger team hides more
   // latency (capped by register-limited occupancy). Clamped to team_size_max at launch.
@@ -281,6 +285,15 @@ class SC {
   //! One device par_for over angg calling the same ComputeSCAngleInv the recompute path uses, so
   //! the table is bit-identical to the inline computation. Uniform-mesh only (uses meshblock-0 dx).
   void BuildAngleInvTable();
+  //! Tiled sweep on the angle-innermost `ir` (I7 x I2). Same tile-plane launch structure as
+  //! FormalSolutionTiled, but each team owns a BLOCK of `tile_na` angles instead of one, and the
+  //! team's inner range runs (plane cells x angles) with ANGLE FASTEST -- so consecutive threads
+  //! read consecutive `angg`, which is contiguous under angle_inner. That is what makes the two
+  //! optimisations composable: tiling supplies the teams, angle-major lanes supply the coalescing.
+  //! Team count is preserved by splitting angles across the league (ntile*nmb*ceil(nang_tot/na))
+  //! rather than collapsing them into one team. Bit-identical to every other sweep.
+  void FormalSolutionTiledAngleInner();
+
   //! Precompute the two index maps the tiled sweep needs (tile-local cells, and tiles). Both are
   //! pure functions of the meshblock/tile dims, so this runs once on first use.
   void BuildTileIndex();
