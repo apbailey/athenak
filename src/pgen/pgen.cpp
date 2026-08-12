@@ -940,6 +940,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     GaussLegendre(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_uniform") == 0) {
     SCUniform(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_lag") == 0) {
+    SCLag(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_attenuation") == 0) {
     SCAttenuation(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_moments") == 0) {

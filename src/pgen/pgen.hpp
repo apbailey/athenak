@@ -81,6 +81,7 @@ class ProblemGenerator {
   void EOSCompose(ParameterInput *pin, const bool restart);
   void GaussLegendre(ParameterInput *pin, const bool restart);
   void SCUniform(ParameterInput *pin, const bool restart);
+  void SCLag(ParameterInput *pin, const bool restart);
   void SCAttenuation(ParameterInput *pin, const bool restart);
   void SCMoments(ParameterInput *pin, const bool restart);
   void SCAtmosphere(ParameterInput *pin, const bool restart);

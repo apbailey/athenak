@@ -1,0 +1,57 @@
+<comment>
+problem = SC boundary-lag probe: iterations to converge vs domain decomposition
+# Uniform emitting medium in a cube with VACUUM boundaries (inflow + default i_in = 0).
+# LTE (ops=0, eps=1) so the ONLY reason to iterate is ghost propagation between meshblocks.
+# Vary <meshblock>/nx* at fixed <mesh>/nx* to change the decomposition; vary <problem>/chi
+# to change the optical depth. See rt-profiling/lag_study.py.
+
+<job>
+basename = sc_lag
+
+<mesh>
+nghost = 2
+nx1    = 64
+x1min  = 0.0
+x1max  = 1.0
+ix1_bc = inflow
+ox1_bc = inflow
+nx2    = 64
+x2min  = 0.0
+x2max  = 1.0
+ix2_bc = inflow
+ox2_bc = inflow
+nx3    = 64
+x3min  = 0.0
+x3max  = 1.0
+ix3_bc = inflow
+ox3_bc = inflow
+
+<meshblock>
+nx1 = 16
+nx2 = 16
+nx3 = 16
+
+<time>
+evolution  = static
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0
+tlim       = 0.0
+
+<nr_radiation>
+nmu          = 3          # 48 rays in 3D
+opa          = 1.0        # unused by the probe (pgen sets chi directly) but must be present
+ops          = 0.0        # LTE: no scattering
+eps          = 1.0        # LTE: use_ali=false, S fixed -> iterations are pure boundary lag
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false
+sweep        = wavefront
+iter_max     = 400
+itermin      = 2
+iter_tol     = 1.0e-6
+
+<problem>
+pgen_name = sc_lag
+chi    = 10.0              # domain optical depth = chi * L, L = 1
+source = 1.0

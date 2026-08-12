@@ -135,6 +135,7 @@ add_executable(
 
         pgen/unit_tests/eos_compose.cpp
         pgen/unit_tests/gauss_legendre.cpp
+        pgen/unit_tests/sc_lag.cpp
         pgen/unit_tests/sc_uniform.cpp
         pgen/unit_tests/sc_attenuation.cpp
         pgen/unit_tests/sc_moments.cpp
