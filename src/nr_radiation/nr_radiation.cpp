@@ -35,7 +35,8 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     jmean("sc_jmean",1,1,1,1),
     jmean_old("sc_jmean_old",1,1,1,1),
     qrad("sc_qrad",1,1,1,1),
-    sigma_s("sc_sigma_s",1,1,1,1),
+    sigma_a("sc_sigma_a",1,1,1,1,1),
+    sigma_s("sc_sigma_s",1,1,1,1,1),
     eps("sc_eps",1,1,1,1),
     lamstr("sc_lamstr",1,1,1,1),
     i_in("sc_i_in",1,1),
@@ -205,8 +206,10 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   if (itermin < 1) itermin = 1;
   if (itermin > iter_max) itermin = iter_max;
 
-  // Opacity/coupling parameters
-  opa  = pin->GetReal("nr_radiation", "opa");
+  // Opacity/coupling parameters. opa is required UNLESS the pgen enrolls an opacity
+  // function (enrollment happens after this ctor, so the check is deferred to pgen.cpp).
+  opa_specified = pin->DoesParameterExist("nr_radiation", "opa");
+  opa  = pin->GetOrAddReal("nr_radiation", "opa", 0.0);
   ops  = pin->GetOrAddReal("nr_radiation", "ops", 0.0);
   prat = pin->GetOrAddReal("nr_radiation", "prat", 1.0);
   crat = pin->GetOrAddReal("nr_radiation", "crat", 1.0);
@@ -228,6 +231,9 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   // jacobi) support ALI: the jacobi sweep reads its upwind intensities from the previous
   // iterate held in a ping-pong double buffer (ir_prev), so its unordered par_for no
   // longer races on ir and is safe with ALI just like the ordered sweeps.
+  // Initial value only: re-derived each solve from per-cell sigma_s in
+  // UpdateOpacityAndSource, so an enrolled opacity function that introduces scattering
+  // (with scalar ops==0) still activates ALI.
   use_ali = (ops > 0.0) || (use_eps_uniform && eps_uniform < 1.0);
 
   // Frequency scaffold (gray default)
@@ -310,7 +316,8 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(jmean_old, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(qrad, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(moments, nmb, 10, ncells3, ncells2, ncells1);
-  Kokkos::realloc(sigma_s, nmb, ncells3, ncells2, ncells1);
+  Kokkos::realloc(sigma_a, nmb, 1, ncells3, ncells2, ncells1);
+  Kokkos::realloc(sigma_s, nmb, 1, ncells3, ncells2, ncells1);
   Kokkos::realloc(eps,     nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(lamstr,  nmb, ncells3, ncells2, ncells1);
   Kokkos::deep_copy(ir, 0.0);
@@ -318,6 +325,7 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::deep_copy(jmean, 0.0);
   Kokkos::deep_copy(qrad, 0.0);
   Kokkos::deep_copy(moments, 0.0);
+  Kokkos::deep_copy(sigma_a, 0.0);
   Kokkos::deep_copy(sigma_s, 0.0);
   Kokkos::deep_copy(eps, 1.0);
   Kokkos::deep_copy(lamstr, 0.0);
@@ -363,6 +371,29 @@ SC::~SC() {
   delete pbval_srad;
   delete pbval_ir;
   delete pang;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::EnrollOpacityFunction / SC::EnrollPlanckFunction
+//! \brief Enroll user opacity / radiation-source hooks (contract in sc/sc_opacity.hpp).
+//! Called from the pgen's UserProblem, BEFORE any restart early-return.
+
+void SC::EnrollOpacityFunction(SCOpacityFnPtr myfunc) {
+  if (myfunc == nullptr) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "EnrollOpacityFunction called with null function" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  user_opacity_func = myfunc;
+}
+
+void SC::EnrollPlanckFunction(SCPlanckFnPtr myfunc) {
+  if (myfunc == nullptr) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "EnrollPlanckFunction called with null function" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  user_planck_func = myfunc;
 }
 
 }  // namespace nr_radiation

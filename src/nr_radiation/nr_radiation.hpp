@@ -11,10 +11,12 @@
 //! scattering (Eq. 22–25). SMR/AMR via CC Restrict/Prolong of ir and srad (source S).
 //!
 //! Opacity/coupling:
-//!   chi = (opa + ops) * rho     total extinction
-//!   eps = opa / (opa + ops)     (or uniform override)
+//!   chi = sigma_a + sigma_s     total extinction (default: (opa + ops) * rho)
+//!   eps = sigma_a / chi         (or uniform override)
 //!   B   = T^4                   (planck); S iterate in srad
 //!   Q   = eps * chi * crat * prat * (J - B)
+//! Per-cell sigma_a/sigma_s and B may be supplied by user hooks enrolled from the pgen
+//! (EnrollOpacityFunction / EnrollPlanckFunction; contract in sc/sc_opacity.hpp).
 
 #include <map>
 #include <memory>
@@ -26,6 +28,7 @@
 #include "tasklist/task_list.hpp"
 #include "bvals/bvals.hpp"
 #include "nr_radiation/angular_grid.hpp"
+#include "nr_radiation/sc/sc_opacity.hpp"
 
 // forward declarations
 class Driver;
@@ -64,7 +67,17 @@ class SC {
   Real crat;   // speed-of-light to sound-speed ratio c/a_gas
   Real eps_uniform;  // if use_eps_uniform: zone eps forced to this value
   bool use_eps_uniform;
-  bool use_ali;      // true when scattering ALI path is active
+  bool use_ali;      // true when scattering ALI path is active (re-derived each solve
+                     // from per-cell sigma_s in UpdateOpacityAndSource)
+  bool opa_specified;  // <nr_radiation>/opa present in input; opa is required unless an
+                       // opacity hook is enrolled (checked post-pgen in pgen.cpp)
+
+  // user-enrollable opacity / source hooks (contract in sc/sc_opacity.hpp);
+  // dispatch is by null-check, no input flags
+  SCOpacityFnPtr user_opacity_func = nullptr;
+  SCPlanckFnPtr user_planck_func = nullptr;
+  void EnrollOpacityFunction(SCOpacityFnPtr myfunc);
+  void EnrollPlanckFunction(SCPlanckFnPtr myfunc);
 
   // frequency scaffold (gray: nfreq=1, wfreq={1.0})
   int nfreq;
@@ -149,8 +162,10 @@ class SC {
   DvceArray4D<Real> jmean_old;  // previous iteration J (LTE residual scratch)
   DvceArray4D<Real> qrad;    // radiative heating/cooling source term
 
-  // ALI / scattering
-  DvceArray4D<Real> sigma_s;  // scattering opacity κ_s ρ
+  // ALI / scattering. sigma_a/sigma_s are (nmb, 1, nx3, nx2, nx1) — nvar=1 5D so they are
+  // directly registrable as stored output variables (basetype_output requires DvceArray5D).
+  DvceArray5D<Real> sigma_a;  // absorption opacity κ_a ρ
+  DvceArray5D<Real> sigma_s;  // scattering opacity κ_s ρ
   DvceArray4D<Real> eps;      // photon destruction probability
   DvceArray4D<Real> lamstr;   // diagonal Λ* = Σ w Ψ⁰
 

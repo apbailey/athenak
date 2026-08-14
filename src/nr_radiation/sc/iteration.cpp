@@ -81,7 +81,8 @@ void SC::AssembleTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) {
 
 //----------------------------------------------------------------------------------------
 //! \fn void SC::UpdateOpacityAndSource
-//! \brief Rebuild chi, eps, sigma_s, planck=B; warm-start S in srad when J is available.
+//! \brief Rebuild chi, eps, sigma_a, sigma_s, planck=B; warm-start S in srad when J is
+//! available.
 //! chi = (opa+ops)*ρ; eps = opa/(opa+ops) or uniform override; B = T^4.
 //! If max|J|==0 (first call / post-regrid), leave existing srad (pgen or prolonged).
 
@@ -96,6 +97,7 @@ void SC::UpdateOpacityAndSource() {
   auto srad_ = srad;
   auto planck_ = planck;
   auto eps_ = eps;
+  auto sigma_a_ = sigma_a;
   auto sigma_s_ = sigma_s;
   auto jmean_ = jmean;
 
@@ -103,6 +105,72 @@ void SC::UpdateOpacityAndSource() {
   Real ops_ = ops;
   Real eps_u = eps_uniform;
   bool use_eps_u = use_eps_uniform;
+
+  DvceArray5D<Real> w0;
+  Real gm1 = 0.0;
+  bool has_fluid = false;
+  if (pmy_pack->phydro != nullptr) {
+    w0 = pmy_pack->phydro->w0;
+    gm1 = pmy_pack->phydro->peos->eos_data.gamma - 1.0;
+    has_fluid = true;
+  } else if (pmy_pack->pmhd != nullptr) {
+    w0 = pmy_pack->pmhd->w0;
+    gm1 = pmy_pack->pmhd->peos->eos_data.gamma - 1.0;
+    has_fluid = true;
+  }
+
+  // Hook path (any user function enrolled): split stages A (opacity) / B (planck) /
+  // C (srad). The no-hook path below runs the original fused kernels verbatim, so
+  // existing runs are bit-identical (sigma_a+sigma_s is not FP-equal to (opa+ops)*rho).
+  const bool hooks = (user_opacity_func != nullptr) || (user_planck_func != nullptr);
+
+  if (hooks) {
+    // ---- Stage A: per-cell opacities (user hook or constant default), derive chi/eps
+    if (user_opacity_func != nullptr) {
+      user_opacity_func(pmy_pack);
+    } else if (has_fluid) {
+      par_for("sc_sigma_default", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
+      KOKKOS_LAMBDA(int m, int k, int j, int i) {
+        Real dens = fmax(w0(m,IDN,k,j,i), 0.0);
+        sigma_a_(m,0,k,j,i) = opa_ * dens;
+        sigma_s_(m,0,k,j,i) = ops_ * dens;
+      });
+    } else {
+      par_for("sc_sigma_default", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
+      KOKKOS_LAMBDA(int m, int k, int j, int i) {
+        sigma_a_(m,0,k,j,i) = opa_;
+        sigma_s_(m,0,k,j,i) = ops_;
+      });
+    }
+    par_for("sc_derive_chieps", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      Real sa = sigma_a_(m,0,k,j,i);
+      Real ss = sigma_s_(m,0,k,j,i);
+      Real chit = sa + ss;
+      chi_(m,k,j,i) = chit;
+      eps_(m,k,j,i) = use_eps_u ? eps_u : ((chit > 0.0) ? sa / chit : 1.0);
+    });
+
+    // Re-derive ALI activation from the actual per-cell scattering field so an enrolled
+    // opacity that introduces scattering (scalar ops==0) still iterates with ALI, and
+    // scattering that appears mid-run is picked up. (Default path keeps the ctor value.)
+    Real ssmax = 0.0;
+    int nmkji_s = (nmb1+1)*n3*n2*n1;
+    Kokkos::parallel_reduce("sc_ssmax", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji_s),
+    KOKKOS_LAMBDA(const int idx, Real &lmax) {
+      int m = idx / (n3*n2*n1);
+      int kji = idx - m*(n3*n2*n1);
+      int k = kji / (n2*n1);
+      int ji = kji - k*(n2*n1);
+      int j = ji / n1;
+      int i = ji - j*n1;
+      lmax = fmax(lmax, sigma_s_(m,0,k,j,i));
+    }, Kokkos::Max<Real>(ssmax));
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &ssmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    use_ali = (ssmax > 0.0) || (use_eps_uniform && eps_uniform < 1.0);
+  }
   bool ali = use_ali;
 
   // Warm-start only once J has been established (skip when jmean is still all-zero)
@@ -127,19 +195,48 @@ void SC::UpdateOpacityAndSource() {
   }
   bool do_warm_ = do_warm;
 
-  DvceArray5D<Real> w0;
-  Real gm1 = 0.0;
-  bool has_fluid = false;
-  if (pmy_pack->phydro != nullptr) {
-    w0 = pmy_pack->phydro->w0;
-    gm1 = pmy_pack->phydro->peos->eos_data.gamma - 1.0;
-    has_fluid = true;
-  } else if (pmy_pack->pmhd != nullptr) {
-    w0 = pmy_pack->pmhd->w0;
-    gm1 = pmy_pack->pmhd->peos->eos_data.gamma - 1.0;
-    has_fluid = true;
+  if (hooks) {
+    // ---- Stage B: planck B (user hook, or T^4 default with fluid; without fluid and
+    // without a source hook, planck keeps whatever the pgen set)
+    if (user_planck_func != nullptr) {
+      user_planck_func(pmy_pack);
+    } else if (has_fluid) {
+      Real gm1_ = gm1;
+      bool affect_ = affect_fluid;
+      par_for("sc_planck_default", DevExeSpace(), 0, nmb1, 0,(n3-1), 0,(n2-1), 0,(n1-1),
+      KOKKOS_LAMBDA(int m, int k, int j, int i) {
+        Real dens = fmax(w0(m,IDN,k,j,i), 0.0);
+        Real B = 0.0;
+        if (affect_) {
+          Real temp = (dens > 0.0) ? (gm1_ * w0(m,IEN,k,j,i) / dens) : 0.0;
+          B = temp * temp * temp * temp;
+        }
+        planck_(m,k,j,i) = B;
+      });
+    }
+
+    // ---- Stage C: srad update (ALI warm-start / LTE srad=B). With a source hook the
+    // hook is authoritative; the legacy keep-pgen-srad heuristic applies only to the
+    // no-hook no-fluid unit tests.
+    bool preserve = (user_planck_func == nullptr) && !has_fluid;
+    par_for("sc_srad_update", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      if (ali) {
+        if (do_warm_) {
+          srad_(m,0,k,j,i) = (1.0 - eps_(m,k,j,i)) * jmean_(m,k,j,i)
+                             + eps_(m,k,j,i) * planck_(m,k,j,i);
+        }
+        // else keep prolonged / pgen S
+      } else if (preserve && planck_(m,k,j,i) == 0.0 && srad_(m,0,k,j,i) != 0.0) {
+        planck_(m,k,j,i) = srad_(m,0,k,j,i);
+      } else {
+        srad_(m,0,k,j,i) = planck_(m,k,j,i);
+      }
+    });
+    return;
   }
 
+  // ---- default (no-hook) path: original fused kernels, bit-identical ----
   if (has_fluid) {
     Real gm1_ = gm1;
     bool affect_ = affect_fluid;
@@ -148,7 +245,8 @@ void SC::UpdateOpacityAndSource() {
       Real dens = fmax(w0(m,IDN,k,j,i), 0.0);
       Real chi_tot = (opa_ + ops_) * dens;
       chi_(m,k,j,i) = chi_tot;
-      sigma_s_(m,k,j,i) = ops_ * dens;
+      sigma_a_(m,0,k,j,i) = opa_ * dens;
+      sigma_s_(m,0,k,j,i) = ops_ * dens;
       Real epsi;
       if (use_eps_u) {
         epsi = eps_u;
@@ -179,7 +277,8 @@ void SC::UpdateOpacityAndSource() {
     par_for("sc_chi_nofluid", DevExeSpace(), 0, nmb1, 0, (n3-1), 0, (n2-1), 0, (n1-1),
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
       chi_(m,k,j,i) = opa_ + ops_;
-      sigma_s_(m,k,j,i) = ops_;
+      sigma_a_(m,0,k,j,i) = opa_;
+      sigma_s_(m,0,k,j,i) = ops_;
       Real epsi = use_eps_u ? eps_u
                             : ((opa_ + ops_ > 0.0) ? opa_ / (opa_ + ops_) : 1.0);
       eps_(m,k,j,i) = epsi;

@@ -26,6 +26,7 @@
 #include "z4c/compact_object_tracker.hpp"
 #include "z4c/z4c.hpp"
 #include "radiation/radiation.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 #include "srcterms/turb_driver.hpp"
 #include "pgen.hpp"
 
@@ -75,6 +76,18 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm) :
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                 << std::endl << "User history output specified in <problem> block, but "
                 << "not enrolled by UserProblem()." << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+  // SC radiation: opa is required unless the pgen enrolled an opacity function
+  // (enrollment happens inside UserProblem, so this check must run post-pgen)
+  {
+    nr_radiation::SC *pnrrad = pm->pmb_pack->pnrrad;
+    if (pnrrad != nullptr && !(pnrrad->opa_specified) &&
+        pnrrad->user_opacity_func == nullptr) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<nr_radiation>/opa is required unless an opacity "
+                << "function is enrolled via EnrollOpacityFunction()" << std::endl;
       exit(EXIT_FAILURE);
     }
   }
@@ -642,6 +655,18 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                 << std::endl << "User history output specified in <problem> block, "
                 << "but not enrolled by UserProblem()." << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+  // SC radiation: opa is required unless the pgen enrolled an opacity function
+  // (also catches pgens whose restart early-return precedes enrollment)
+  {
+    nr_radiation::SC *pnrrad = pm->pmb_pack->pnrrad;
+    if (pnrrad != nullptr && !(pnrrad->opa_specified) &&
+        pnrrad->user_opacity_func == nullptr) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<nr_radiation>/opa is required unless an opacity "
+                << "function is enrolled via EnrollOpacityFunction()" << std::endl;
       exit(EXIT_FAILURE);
     }
   }

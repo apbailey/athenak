@@ -59,7 +59,11 @@ TaskStatus SC::NewTimeStep(Driver *pdrive, int stage) {
     gamma = pmy_pack->pmhd->peos->eos_data.gamma;
   }
   const Real gm1 = gamma - 1.0;
+  // default (scalar-opa) path keeps the fused coefficient verbatim (bit-identity);
+  // with an enrolled opacity function the per-cell kappa_a = sigma_a/rho is used instead
   const Real rate_coeff = 4.0 * gm1 * opa * crat * prat;
+  const bool user_opa = (user_opacity_func != nullptr);
+  const Real rate_base = 4.0 * gm1 * crat * prat;
 
   DvceArray5D<Real> w0;
   if (pmy_pack->phydro != nullptr) {
@@ -72,9 +76,12 @@ TaskStatus SC::NewTimeStep(Driver *pdrive, int stage) {
   }
 
   auto chi_ = chi;
+  auto sigma_a_ = sigma_a;
   Real dxmin2 = dxmin * dxmin;
   Real diff_c = diff_coeff;
   Real rc = rate_coeff;
+  Real rb = rate_base;
+  bool user_opa_ = user_opa;
   Real dt_min = std::numeric_limits<Real>::max();
   Kokkos::parallel_reduce("sc_rad_dt",
     Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
@@ -93,7 +100,8 @@ TaskStatus SC::NewTimeStep(Driver *pdrive, int stage) {
       if (temp <= 0.0) return;
       Real T3 = temp * temp * temp;
       Real chiv = chi_(m, k, j, i);
-      Real nu_rad = rc * T3;
+      Real nu_rad = user_opa_ ? (rb * (sigma_a_(m, 0, k, j, i) / dens) * T3)
+                              : (rc * T3);
       Real denom = 1.0 + diff_c * dxmin2 * chiv * chiv;
       nu_rad /= denom;
       if (nu_rad > 0.0) {
