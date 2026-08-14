@@ -28,6 +28,7 @@
 #include "z4c/z4c.hpp"
 #include "srcterms/srcterms.hpp"
 #include "srcterms/turb_driver.hpp"
+#include "nr_radiation/nr_radiation.hpp"
 #include "outputs.hpp"
 
 #if MPI_PARALLEL_ENABLED
@@ -167,6 +168,13 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
        << "Output of particles requested in <output> block '"
        << out_params.block_name << "' but particle object not constructed."
        << std::endl << "Input file is likely missing corresponding block" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  if ((ivar>=153) && (ivar<159) && (pm->pmb_pack->pnrrad == nullptr)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+       << "Output of SC radiation variable requested in <output> block '"
+       << out_params.block_name << "' but no SC object has been constructed."
+       << std::endl << "Input file is likely missing a <nr_radiation> block" << std::endl;
     exit(EXIT_FAILURE);
   }
 
@@ -695,6 +703,33 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
       outvars.emplace_back("r22_ff",moments_offset+7,&(derived_var));
       outvars.emplace_back("r23_ff",moments_offset+8,&(derived_var));
       outvars.emplace_back("r33_ff",moments_offset+9,&(derived_var));
+    }
+
+    // SC (short-characteristics) radiation: stored arrays, refreshed once per cycle by
+    // SolveTransfer (moments/srad are the converged field for the start-of-cycle fluid
+    // state; the t=0 dump precedes any solve and is all-zero)
+    if (variable.compare("sc_rad") == 0 || variable.compare("sc_rad_J") == 0) {
+      outvars.emplace_back("rad_J",0,&(pm->pmb_pack->pnrrad->moments));
+    }
+    if (variable.compare("sc_rad") == 0 || variable.compare("sc_rad_H") == 0) {
+      outvars.emplace_back("rad_H1",1,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_H2",2,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_H3",3,&(pm->pmb_pack->pnrrad->moments));
+    }
+    if (variable.compare("sc_rad") == 0 || variable.compare("sc_rad_K") == 0) {
+      outvars.emplace_back("rad_K11",4,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_K22",5,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_K33",6,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_K12",7,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_K13",8,&(pm->pmb_pack->pnrrad->moments));
+      outvars.emplace_back("rad_K23",9,&(pm->pmb_pack->pnrrad->moments));
+    }
+    if (variable.compare("sc_rad_src") == 0) {
+      outvars.emplace_back("rad_S",0,&(pm->pmb_pack->pnrrad->srad));
+    }
+    if (variable.compare("sc_rad_sigma") == 0) {
+      outvars.emplace_back("rad_sigma_a",0,&(pm->pmb_pack->pnrrad->sigma_a));
+      outvars.emplace_back("rad_sigma_s",0,&(pm->pmb_pack->pnrrad->sigma_s));
     }
   }
 

@@ -22,7 +22,7 @@
     #error NHISTORY > NREDUCTION in outputs.hpp
 #endif
 
-#define NOUTPUT_CHOICES 153
+#define NOUTPUT_CHOICES 159
 // choices for output variables used in <ouput> blocks in input file
 // TO ADD MORE CHOICES:
 //   - add more strings to array below, change NOUTPUT_CHOICES above appropriately
@@ -99,7 +99,13 @@ static const char *var_choice[NOUTPUT_CHOICES] = {
   "tmunu",
 
   // Particles (151-152)
-  "prtcl_all", "prtcl_d"
+  "prtcl_all", "prtcl_d",
+
+  // SC (short-characteristics) radiation (153-158). Moments in the Σw=1 quadrature
+  // normalization (Er=J, F=H, P=K in code units; no 4π). In 2D, mu_z is unsigned, so
+  // H3/K13/K23 are not meaningful. sc_rad_src = the source iterate S; sc_rad_sigma =
+  // per-cell absorption/scattering opacities (κ_a ρ, κ_s ρ).
+  "sc_rad", "sc_rad_J", "sc_rad_H", "sc_rad_K", "sc_rad_src", "sc_rad_sigma"
 };
 
 
