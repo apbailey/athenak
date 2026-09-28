@@ -41,9 +41,10 @@ nx2       = 16
 nx3       = 1
 
 <mesh_refinement>
-refinement       = none        # the coarse-fine case overrides this to adaptive
-max_nmb_per_rank = 512
-num_levels       = 2
+refinement          = none     # the coarse-fine case overrides this to adaptive
+max_nmb_per_rank    = 512
+num_levels          = 2
+refinement_interval = 1        # default 5 would not fire inside a short run
 
 <amr_criterion1>
 method    = min_max

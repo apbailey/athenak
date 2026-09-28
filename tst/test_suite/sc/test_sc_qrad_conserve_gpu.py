@@ -84,6 +84,37 @@ def test_sc_qrad_conserve(kernel, tile):
         testutils.cleanup()
 
 
+@pytest.mark.parametrize("levels", [2, 3])
+@pytest.mark.parametrize("kernel,tile", _KERNELS)
+def test_sc_qrad_conserve_amr(kernel, tile, levels):
+    """Conservation across coarse-fine interfaces, with no flux correction.
+
+    It holds, and for a reason worth recording. Telescoping across a coarse-fine face
+    needs the coarse face flux to equal the area-weighted mean of the fine face fluxes
+    over it. The coarse block's ghost there is RestrictCC of the fine data, a plain volume
+    average; the fine blocks' ghosts are ProlongateCC of the coarse data, whose min-mod
+    increments cancel pairwise so the children average back to the parent. The face flux
+    is linear in the intensity, so those two properties are exactly the condition, and it
+    is met without a flux correction. The existing PackAndSendFluxCC machinery is
+    therefore not needed for this; if the reconstruction or the transfer operators ever
+    change, this test is what will notice.
+    """
+    input_file = "inputs/sc_qrad_conserve.athinput"
+    testutils.cleanup()
+    try:
+        assert testutils.run(input_file, [
+            "mesh_refinement/refinement=adaptive", f"mesh_refinement/num_levels={levels}",
+            "time/nlim=12", f"nr_radiation/sweep_kernel={kernel}",
+            f"nr_radiation/tile_size={tile}",
+        ]), f"run failed: {kernel} AMR {levels} levels"
+        row = _cols()
+        assert row[4] < _RESID_TOL, \
+            f"{kernel} AMR {levels} levels: heating does not integrate to zero across " \
+            f"coarse-fine faces, residual {row[4]:g} >= {_RESID_TOL:g}"
+    finally:
+        testutils.cleanup()
+
+
 @pytest.mark.parametrize("kernel,tile", _KERNELS)
 def test_sc_qrad_conserve_decomposition(kernel, tile):
     """The answer must not depend on how the domain is cut into meshblocks.

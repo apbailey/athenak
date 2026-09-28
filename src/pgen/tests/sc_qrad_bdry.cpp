@@ -43,6 +43,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 
 #include "athena.hpp"
 #include "globals.hpp"
