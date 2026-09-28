@@ -1,0 +1,69 @@
+# AthenaK input: physical-boundary face flux of the differential coupling (Davis Eq. 28).
+#
+# A uniform emitting/absorbing medium filling the domain, no fluid. The heating must
+# integrate to minus the net flux leaving the boundary, and the test recomputes that flux
+# on the host, ray by ray, independently of the kernel. The pytest wrapper runs the four
+# boundary flags that say something different: reflect (flux identically zero), vacuum
+# (escape only), inflow (in minus out), outflow (the interior H).
+#
+# 2D by default; the wrapper adds 1D and 3D. inflow here, overridden per case.
+
+<comment>
+problem   = SC differential Q_rad boundary face flux
+reference = Davis, Stone & Jiang 2012 Eq. 28
+
+<job>
+basename  = SCQradBdry
+
+<mesh>
+nghost    = 2
+nx1       = 16
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = inflow
+ox1_bc    = inflow
+
+nx2       = 16
+x2min     = 0.0
+x2max     = 1.0
+ix2_bc    = inflow
+ox2_bc    = inflow
+
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = inflow
+ox3_bc    = inflow
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = 1
+tlim       = 1.0e5
+ndiag      = 1
+
+<nr_radiation>
+nmu          = 3
+kappa_a      = 0.0        # unused: the opacity hook sets sigma_a
+prat         = 1.0
+crat         = 1.0
+affect_fluid = false      # no fluid; Q is still computed and is what is checked
+sweep_kernel = wavefront
+tile_size    = 0
+iter_max     = 100
+iter_tol     = 1.0e-13
+qrad_form    = divh
+
+<problem>
+pgen_name = sc_qrad_bdry
+sigma     = 1.0
+b0        = 1.0
+amp       = 0.5      # the emission is non-uniform on purpose: see the pgen
+i_inc     = 1.0
+tol       = 1.0e-2

@@ -585,6 +585,17 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
     }
   }
 
+  // The differential forms read the intensity in the ghost zones, and the two sides of a
+  // shared face have to agree on the flux there or the divergence stops telescoping. The
+  // loop above exchanges before each sweep and then exits on convergence, so at this
+  // point a block's ghosts predate its own last sweep while its neighbour's interior does
+  // not: the two would disagree by one sweep's update, leaving a conservation error of
+  // the order of the iteration residual and growing with the number of shared faces. One
+  // more exchange removes it. Skipped for the integral form, which reads no neighbour.
+  if (qrad_form != QradForm::integral) {
+    pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_bvals", 0);
+  }
+
   ComputeHK();
   ComputeQrad();
   return TaskStatus::complete;

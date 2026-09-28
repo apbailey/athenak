@@ -76,6 +76,28 @@ struct HyperplaneOrder {
 enum class SweepKernel {wavefront, tiled, plane};
 
 //----------------------------------------------------------------------------------------
+//! \enum QradForm
+//! \brief which form of the gas-energy coupling to evaluate (<nr_radiation>/qrad_form).
+//! Davis 2012 gives two, identical in the continuum and differing only as
+//! discretisations:
+//!   integral  Eq. 27, Q = crat prat sigma_a (J - brad). Local and algebraic. Loses
+//!             precision when the zone is optically thick and near equilibrium, where
+//!             J -> brad and the difference is small while sigma_a is large.
+//!   divh      Eq. 28, Q = -crat prat div H, from the flux on cell faces. Accurate in
+//!             that thick limit, and conservative: the face-flux difference telescopes,
+//!             so the domain-integrated heating equals minus the net flux through the
+//!             boundary whatever the state of the solve. Degrades in the opposite limit,
+//!             where sigma_a -> 0 makes the exact answer zero while div H does not.
+//!   hybrid    Eq. 27 where chi*dx <= 1, Eq. 28 above it (Davis sec. 4). Accurate in
+//!             both limits, but NOT conservative: mixing the forms per zone means a
+//!             differential zone debits a face flux that its integral-form neighbour
+//!             never credits.
+//! No 4 pi anywhere: the quadrature weights sum to one (angular_grid.hpp), so J is the
+//! mean intensity and H = <mu I>, and both forms carry only crat*prat.
+
+enum class QradForm {integral, divh, hybrid};
+
+//----------------------------------------------------------------------------------------
 //! \class SC
 //! \brief Short-characteristics (SC) radiative transfer in the gray LTE limit: a
 //! quasi-static formal solution on discrete ordinates (Davis, Stone & Jiang 2012),
@@ -127,6 +149,10 @@ class SC {
   int tile_size;   // tiled only: cells per tile edge; 0 = the whole meshblock is one tile
   int team_size;   // tiled only: threads per team; 0 = Kokkos::AUTO
 
+  // which form of the gas-energy coupling to evaluate (see QradForm above)
+  QradForm qrad_form;
+  std::string qrad_form_name;      // as given in the deck, for messages
+
   // iteration control
   int iter_max;
   // minimum sweeps before early exit (default 1: sweep 1 is compared to the
@@ -168,6 +194,15 @@ class SC {
   DvceArray5D<Real> moments;
   DvceArray5D<Real> j_prev; // J from the previous sweep (residual scratch)
   DvceArray4D<Real> qrad;       // radiative heating/cooling rate of the gas
+  // Radiative flux on cell faces, H.n per face, for the divh and hybrid forms; the
+  // quantity whose divergence is Q. Built from ir rather than from the cell-centred H in
+  // moments: on an interior face the two agree (the moment of a linear face
+  // reconstruction is the mean of the moments), but at a physical boundary only the
+  // per-ray form is defined, because a boundary condition fixes just the inbound half of
+  // the sphere. DvceFaceFld5D with nvar = 1 because that is the type the coarse-fine
+  // flux correction takes; gray, so there is nothing else to carry. Allocated on first
+  // use, so the integral form costs nothing.
+  DvceFaceFld5D<Real> hflx;
   // absorption coefficient per unit volume (nmb, 1, nx3, nx2, nx1); nvar=1 5D so it is
   // directly registrable as a stored output variable. Written every solve by the opacity
   // hook, else kappa_a * rho; the sweep reads the copy chi
@@ -233,7 +268,10 @@ class SC {
   void ComputeJ();       // J only, into moments slot 0 (every sweep; after a remesh)
   Real ResidualJ();      // max symmetric relative change J vs j_prev, allreduced
   void ComputeHK();      // H_i and K_ij into moments slots 1-9 (once per solve)
-  void ComputeQrad();
+  void ComputeQrad();            // dispatch on qrad_form
+  void ComputeQradIntegral();    // Eq. 27, local
+  void BuildHFlux();             // H.n on cell faces, into hflx
+  void ComputeQradDivH();        // Eq. 28 (and the hybrid blend), from hflx
 
   // formal solution (sc/formal_solution.cpp): dispatch on sweep_kernel. Public because
   // Kokkos CUDA device lambdas cannot be defined inside private/protected members.

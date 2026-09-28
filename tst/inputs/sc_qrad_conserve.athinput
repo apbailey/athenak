@@ -1,0 +1,74 @@
+# AthenaK input: closed-box conservation of the differential coupling (Davis Eq. 28).
+#
+# Periodic and fluid-coupled, so there is no boundary and the flux divergence must
+# integrate to zero over the domain. That identity is algebraic, not asymptotic, so it
+# holds at iter_max = 1 and at nmu = 1 as well; the pytest wrapper checks both. Run with
+# qrad_form = integral to see the contrast: Eq. 27 has no such identity.
+#
+# Uniform mesh by default. The coarse-fine variant is reached with
+# mesh_refinement/refinement = adaptive, as the linwave decks do.
+
+<comment>
+problem   = SC differential Q_rad closed-box conservation
+reference = Davis, Stone & Jiang 2012 Eq. 26-28
+
+<job>
+basename  = SCQradConserve
+
+<mesh>
+nghost    = 2
+nx1       = 32
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = periodic
+ox1_bc    = periodic
+
+nx2       = 16
+x2min     = 0.0
+x2max     = 1.0
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = 2
+tlim       = 1.0
+ndiag      = 1
+
+<hydro>
+eos         = ideal
+reconstruct = plm
+rsolver     = llf
+gamma       = 1.66666666667
+
+<nr_radiation>
+nmu          = 3
+kappa_a      = 4.0
+prat         = 1.0
+crat         = 1.0
+affect_fluid = true
+sweep_kernel = wavefront
+tile_size    = 0
+iter_max     = 20
+iter_tol     = 1.0e-12
+qrad_form    = divh
+
+<problem>
+pgen_name = sc_qrad_conserve
+d0        = 1.0
+p0        = 1.0
+amp       = 0.3
+tol       = 1.0e-2

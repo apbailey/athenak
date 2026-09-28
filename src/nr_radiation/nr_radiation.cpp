@@ -36,6 +36,7 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     moments("sc_moments",1,1,1,1,1),
     j_prev("sc_j_prev",1,1,1,1,1),
     qrad("sc_qrad",1,1,1,1),
+    hflx("sc_hflx",1,1,1,1,1),
     sigma_a("sc_sigma_a",1,1,1,1,1),
     pmy_pack(ppack) {
   // straight-line rays require flat, Cartesian spacetime
@@ -104,6 +105,38 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
       << std::endl << "<nr_radiation>/team_size must be a multiple of 32 (a warp); got "
       << team_size << std::endl;
     std::exit(EXIT_FAILURE);
+  }
+
+  // Coupling form ---------------------------------------------------------------------
+  qrad_form_name = pin->GetOrAddString("nr_radiation", "qrad_form", "integral");
+  if (qrad_form_name == "integral") {
+    qrad_form = QradForm::integral;
+  } else if (qrad_form_name == "divh") {
+    qrad_form = QradForm::divh;
+  } else if (qrad_form_name == "hybrid") {
+    qrad_form = QradForm::hybrid;
+  } else {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/qrad_form = '" << qrad_form_name
+      << "' is not recognised; valid values are 'integral', 'divh', 'hybrid'"
+      << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  // A user face is the pgen's to fill. The differential forms read the inbound half of
+  // every boundary ghost, which every built-in flag provides (outflow and diode copy the
+  // last active cell, inflow writes i_in, vacuum zeroes, reflect mirrors each ray), but a
+  // user boundary is only as good as its own kernel.
+  if (qrad_form != QradForm::integral && global_variable::my_rank == 0) {
+    int ndim_msh = 1 + (ppack->pmesh->multi_d ? 1 : 0) + (ppack->pmesh->three_d ? 1 : 0);
+    for (int f = 0; f < 2*ndim_msh; ++f) {
+      if (ppack->pmesh->mesh_bcs[f] == BoundaryFlag::user) {
+        std::cout << "### WARNING in " << __FILE__ << ": <nr_radiation>/qrad_form = "
+          << qrad_form_name << " reads the inbound intensity in the ghost zones of every "
+          << "boundary; on a user face the pgen's boundary kernel must set it"
+          << std::endl;
+        break;
+      }
+    }
   }
 
   // Iteration control -----------------------------------------------------------------

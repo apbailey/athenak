@@ -139,6 +139,8 @@ add_executable(
         pgen/tests/rad_linear_wave.cpp
         pgen/tests/sc_beam.cpp
         pgen/tests/sc_linwave.cpp
+        pgen/tests/sc_qrad_bdry.cpp
+        pgen/tests/sc_qrad_conserve.cpp
         pgen/tests/sc_sphere.cpp
         pgen/tests/z4c_boosted_puncture.cpp
         pgen/tests/z4c_linear_wave.cpp

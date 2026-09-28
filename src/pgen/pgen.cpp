@@ -1049,6 +1049,10 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     SCBeam(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_linwave") == 0) {
     SCLinwave(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_qrad_bdry") == 0) {
+    SCQradBdry(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_qrad_conserve") == 0) {
+    SCQradConserve(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_sphere") == 0) {
     SCSphere(pin, is_restart);
   } else if (pgen_fun_name.compare("shock_tube") == 0) {

@@ -13,12 +13,55 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 
 #include "athena.hpp"
 #include "mesh/mesh.hpp"
 #include "nr_radiation/nr_radiation.hpp"
 
 namespace nr_radiation {
+
+namespace {
+//----------------------------------------------------------------------------------------
+//! \fn Real FaceIntensity
+//! \brief The intensity of ONE ray at a cell face, given its values in the two cells
+//! either side (lo = the cell at lower index, hi = the cell at higher index) and its
+//! direction cosine along the face normal axis. This is the single place the face rule
+//! lives.
+//!
+//! Interior face: both cells are real, and a linear reconstruction gives the mean. Summed
+//! over rays that is (H_lo + H_hi)/2, the mean of the cell-centred moments.
+//!
+//! Physical-boundary face: one of the two cells is a ghost, and a ghost is only half
+//! valid. A boundary condition can fix the intensity ENTERING the domain and no more --
+//! the transfer equation is hyperbolic along rays, so data may be imposed on inflow
+//! characteristics only -- yet RadiationBCs writes every ray into the ghost regardless of
+//! direction, because the sweep never reads a downwind ghost and so never notices. So the
+//! outbound half of a boundary ghost is not a physical intensity, and averaging would mix
+//! it in. Take each ray from the cell it arrived from instead: that is the value actually
+//! crossing the face, and it is well defined for every ray.
+//!
+//! "Arrived from" is just upwind along the axis, the same sense the sweep uses for
+//! its own
+//! footpoints, and it needs no knowledge of which end of the domain this face is: a ray
+//! with mu > 0 travels towards higher index and so comes from lo, whichever side happens
+//! to be the ghost. At an inner face lo is the ghost and mu > 0 is inbound; at an outer
+//! face hi is the ghost and mu < 0 is inbound. One expression covers both.
+//!
+//! The boundary conditions then reduce correctly without special cases. outflow and diode
+//! copy the last active cell, so both halves read the same numbers and the flux is the
+//! interior H. vacuum zeroes the ghost, leaving only what escapes. reflect writes each
+//! ghost ray from its mirror image, and mirroring flips mu at equal weight, so the two
+//! halves cancel and no flux crosses -- which is what a mirror means.
+
+KOKKOS_INLINE_FUNCTION
+Real FaceIntensity(Real i_lo, Real i_hi, Real mu_n, bool boundary) {
+  if (boundary) return (mu_n > 0.0) ? i_lo : i_hi;
+  return 0.5*(i_lo + i_hi);
+}
+}  // namespace
+
 
 //----------------------------------------------------------------------------------------
 //! \fn void SC::ComputeJ
@@ -112,7 +155,25 @@ void SC::ComputeHK() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void SC::ComputeQrad
-//! \brief Gas-radiation coupling, Davis Eq. 27 in its absorption form:
+//! \brief Gas-radiation coupling: dispatch on <nr_radiation>/qrad_form. The branch is
+//! resolved on the host, as with sweep_kernel, so no kernel carries it.
+
+void SC::ComputeQrad() {
+  switch (qrad_form) {
+    case QradForm::integral:
+      ComputeQradIntegral();
+      break;
+    case QradForm::divh:
+    case QradForm::hybrid:
+      BuildHFlux();
+      ComputeQradDivH();
+      break;
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::ComputeQradIntegral
+//! \brief Davis Eq. 27 in its absorption form:
 //!   Q = crat * prat * sigma_a * (J - brad)
 //!
 //! Eq. 27 gives the two as an identity, 4 pi chi_tot (J - S) = 4 pi sigma_a (J - B):
@@ -130,11 +191,11 @@ void SC::ComputeHK() {
 //! coupling and chi only in the diffusion denominator.
 //!
 //! Both forms lose precision in the opposite limit -- optically thick and near
-//! equilibrium, where J -> B. That is what Davis Eq. 28, Q = -4 pi div H, is for,
-//! switched on chi*dx > 1. Not implemented here: this module has only the integral
-//! form, so the thick regime is a known gap against the reference.
+//! equilibrium, where J -> brad and the difference is small while sigma_a is large.
+//! That is what Davis Eq. 28 is for; it is qrad_form = divh (ComputeQradDivH), with
+//! hybrid switching between the two on chi*dx as the reference does.
 
-void SC::ComputeQrad() {
+void SC::ComputeQradIntegral() {
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
@@ -150,6 +211,182 @@ void SC::ComputeQrad() {
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     qrad_(m,k,j,i) = crat_prat * sigma_a_(m,0,k,j,i)
                      * (mom_(m,0,k,j,i) - brad_(m,k,j,i));
+  });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::BuildHFlux
+//! \brief The radiative flux normal to each cell face, H.n, into hflx. x1f(i) is the
+//! face at i-1/2, so the range is [is, ie+1]; likewise x2f, x3f.
+//!
+//! On an interior face the two cells either side are both real, and the flux is the
+//! moment of a linear reconstruction of the intensity there:
+//!
+//!   Hhat_{i-1/2} = Sum_k w_k mu_k * (I_k(i-1) + I_k(i))/2
+//!
+//! which is identically (H_{i-1} + H_i)/2, the mean of the cell-centred moments. It is
+//! written per ray rather than as that mean for two reasons. It never reads a moment in a
+//! ghost zone, so moments stays an interior-only, output-only array and ComputeHK is
+//! untouched. And it is the form that survives at a physical boundary, where the mean
+//! does not: a boundary condition fixes only the inbound half of the sphere, so the
+//! outbound half of a boundary ghost cell is not a physical intensity and a full-sphere
+//! quadrature of it is meaningless. Boundary faces are therefore taken per ray from
+//! whichever side of the face that ray arrived from, which is the same expression with
+//! the average replaced by a choice. (The two routes agree on interior faces to
+//! round-off, not bitwise: this one averages then weights, the other weights then
+//! averages.)
+//!
+//! Faces normal to an inactive dimension are not built. In 2D that also keeps the flux
+//! clear of mu_z, which carries no sign there (angular_grid.cpp), so the x3 moment is not
+//! a physical flux in 2D.
+
+void SC::BuildHFlux() {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int &ng = indcs.ng;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  int nang = pang->nang;
+  int nang_tot_ = nang_tot;
+  const bool multi_d = pmy_pack->pmesh->multi_d;
+  const bool three_d = pmy_pack->pmesh->three_d;
+
+  // allocated on first use, so the integral form never pays for it
+  int nc1 = indcs.nx1 + 2*ng;
+  int nc2 = (indcs.nx2 > 1) ? (indcs.nx2 + 2*ng) : 1;
+  int nc3 = (indcs.nx3 > 1) ? (indcs.nx3 + 2*ng) : 1;
+  if (hflx.x1f.extent_int(0) != (nmb1+1) || hflx.x1f.extent_int(4) != nc1) {
+    Kokkos::realloc(hflx.x1f, (nmb1+1), 1, nc3, nc2, nc1);
+    Kokkos::realloc(hflx.x2f, (nmb1+1), 1, nc3, nc2, nc1);
+    Kokkos::realloc(hflx.x3f, (nmb1+1), 1, nc3, nc2, nc1);
+    Kokkos::deep_copy(hflx.x1f, 0.0);
+    Kokkos::deep_copy(hflx.x2f, 0.0);
+    Kokkos::deep_copy(hflx.x3f, 0.0);
+  }
+
+  auto &mu = pang->mu;
+  auto &wmu = pang->wmu;
+  auto ir_ = ir;
+  auto f1 = hflx.x1f;
+  auto f2 = hflx.x2f;
+  auto f3 = hflx.x3f;
+  // A face is physical when this meshblock has no neighbour across it. Periodic faces do
+  // have one (the tree wraps them), so they read as block and take the interior rule.
+  auto &mb_bcs = pmy_pack->pmb->mb_bcs;
+
+  par_for("sc_hflx_x1", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie+1,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    bool blo = (mb_bcs.d_view(m, BoundaryFace::inner_x1) != BoundaryFlag::block);
+    bool bhi = (mb_bcs.d_view(m, BoundaryFace::outer_x1) != BoundaryFlag::block);
+    bool bdry = (i == is && blo) || (i == ie+1 && bhi);
+    Real h = 0.0;
+    for (int angg = 0; angg < nang_tot_; ++angg) {
+      int oct = angg / nang;
+      int a = angg - oct * nang;
+      Real mu_n = mu.d_view(oct, a, 0);
+      h += wmu.d_view(a) * mu_n
+           * FaceIntensity(ir_(m, angg, k, j, i-1), ir_(m, angg, k, j, i), mu_n, bdry);
+    }
+    f1(m, 0, k, j, i) = h;
+  });
+  if (multi_d) {
+    par_for("sc_hflx_x2", DevExeSpace(), 0, nmb1, ks, ke, js, je+1, is, ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      bool blo = (mb_bcs.d_view(m, BoundaryFace::inner_x2) != BoundaryFlag::block);
+      bool bhi = (mb_bcs.d_view(m, BoundaryFace::outer_x2) != BoundaryFlag::block);
+      bool bdry = (j == js && blo) || (j == je+1 && bhi);
+      Real h = 0.0;
+      for (int angg = 0; angg < nang_tot_; ++angg) {
+        int oct = angg / nang;
+        int a = angg - oct * nang;
+        Real mu_n = mu.d_view(oct, a, 1);
+        h += wmu.d_view(a) * mu_n
+             * FaceIntensity(ir_(m, angg, k, j-1, i), ir_(m, angg, k, j, i), mu_n, bdry);
+      }
+      f2(m, 0, k, j, i) = h;
+    });
+  }
+  if (three_d) {
+    par_for("sc_hflx_x3", DevExeSpace(), 0, nmb1, ks, ke+1, js, je, is, ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      bool blo = (mb_bcs.d_view(m, BoundaryFace::inner_x3) != BoundaryFlag::block);
+      bool bhi = (mb_bcs.d_view(m, BoundaryFace::outer_x3) != BoundaryFlag::block);
+      bool bdry = (k == ks && blo) || (k == ke+1 && bhi);
+      Real h = 0.0;
+      for (int angg = 0; angg < nang_tot_; ++angg) {
+        int oct = angg / nang;
+        int a = angg - oct * nang;
+        Real mu_n = mu.d_view(oct, a, 2);
+        h += wmu.d_view(a) * mu_n
+             * FaceIntensity(ir_(m, angg, k-1, j, i), ir_(m, angg, k, j, i), mu_n, bdry);
+      }
+      f3(m, 0, k, j, i) = h;
+    });
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::ComputeQradDivH
+//! \brief Davis Eq. 28, the differential form, as the divergence of the face flux:
+//!   Q = -crat * prat * div H
+//! No 4 pi: the weights sum to one, so this carries the same crat*prat as Eq. 27.
+//!
+//! Conservative by construction. Each interior face enters two cells with opposite signs,
+//! so summing Q over the domain telescopes to the flux through the domain boundary alone.
+//! That holds whatever the state of the solve -- an unconverged iteration or a coarse
+//! angular grid moves energy to the wrong place, but cannot create or destroy it.
+//!
+//! Under qrad_form = hybrid the cell instead takes Eq. 27 where it is the better
+//! conditioned of the two, chi*dx <= 1 (Davis sec. 4). The criterion is per cell and
+//! scalar, on the smallest active cell width: a per-direction test would let one cell mix
+//! an Eq. 27 contribution along x with an Eq. 28 contribution along y, leaving its x
+//! faces no longer telescoping against the neighbour's. Whole cells keep the bookkeeping
+//! intact between differential cells, though the blend still breaks conservation wherever
+//! the two forms meet -- that is inherent to switching, and is why divh, not hybrid, is
+//! the conservative setting.
+
+void SC::ComputeQradDivH() {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  auto f1 = hflx.x1f;
+  auto f2 = hflx.x2f;
+  auto f3 = hflx.x3f;
+  auto chi_ = chi;
+  auto sigma_a_ = sigma_a;
+  auto brad_ = brad;
+  auto mom_ = moments;
+  auto qrad_ = qrad;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  const Real crat_prat = crat * prat;
+  const bool multi_d = pmy_pack->pmesh->multi_d;
+  const bool three_d = pmy_pack->pmesh->three_d;
+  const bool blend = (qrad_form == QradForm::hybrid);
+
+  par_for("sc_compute_qrad_divh", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real dx1 = mbsize.d_view(m).dx1;
+    if (blend) {
+      Real dxm = dx1;
+      if (multi_d) dxm = fmin(dxm, mbsize.d_view(m).dx2);
+      if (three_d) dxm = fmin(dxm, mbsize.d_view(m).dx3);
+      if (chi_(m,k,j,i)*dxm <= 1.0) {
+        qrad_(m,k,j,i) = crat_prat * sigma_a_(m,0,k,j,i)
+                         * (mom_(m,0,k,j,i) - brad_(m,k,j,i));
+        return;
+      }
+    }
+    Real divh = (f1(m,0,k,j,i+1) - f1(m,0,k,j,i)) / dx1;
+    if (multi_d) {
+      divh += (f2(m,0,k,j+1,i) - f2(m,0,k,j,i)) / mbsize.d_view(m).dx2;
+    }
+    if (three_d) {
+      divh += (f3(m,0,k+1,j,i) - f3(m,0,k,j,i)) / mbsize.d_view(m).dx3;
+    }
+    qrad_(m,k,j,i) = -crat_prat * divh;
   });
 }
 

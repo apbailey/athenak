@@ -73,6 +73,8 @@ class ProblemGenerator {
   void RadiationBeam(ParameterInput *pin, const bool restart);
   void SCBeam(ParameterInput *pin, const bool restart);
   void SCLinwave(ParameterInput *pin, const bool restart);
+  void SCQradBdry(ParameterInput *pin, const bool restart);
+  void SCQradConserve(ParameterInput *pin, const bool restart);
   void SCSphere(ParameterInput *pin, const bool restart);
   void Z4cBoostedPuncture(ParameterInput *pin, const bool restart);
   void Z4cLinearWave(ParameterInput *pin, const bool restart);
