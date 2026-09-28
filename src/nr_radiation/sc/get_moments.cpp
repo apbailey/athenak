@@ -60,6 +60,20 @@ Real FaceIntensity(Real i_lo, Real i_hi, Real mu_n, bool boundary) {
   if (boundary) return (mu_n > 0.0) ? i_lo : i_hi;
   return 0.5*(i_lo + i_hi);
 }
+
+//----------------------------------------------------------------------------------------
+//! \fn bool IsPhysicalFace
+//! \brief True when nothing lies across this face of the meshblock. mb_bcs holds block
+//! for a face with a neighbour in the tree, but a block at the DOMAIN EDGE is given the
+//! mesh flag itself (meshblock.cpp) -- and that includes periodic, where the tree does
+//! wrap and the ghost really is a neighbour's interior. Periodic must therefore be
+//! excluded explicitly: counting it as physical would apply the boundary rule to what is
+//! an interior face, quietly changing the scheme on every periodic domain edge.
+
+KOKKOS_INLINE_FUNCTION
+bool IsPhysicalFace(BoundaryFlag f) {
+  return (f != BoundaryFlag::block && f != BoundaryFlag::periodic);
+}
 }  // namespace
 
 
@@ -271,14 +285,12 @@ void SC::BuildHFlux() {
   auto f1 = hflx.x1f;
   auto f2 = hflx.x2f;
   auto f3 = hflx.x3f;
-  // A face is physical when this meshblock has no neighbour across it. Periodic faces do
-  // have one (the tree wraps them), so they read as block and take the interior rule.
-  auto &mb_bcs = pmy_pack->pmb->mb_bcs;
+  auto &mb_bcs = pmy_pack->pmb->mb_bcs;   // see IsPhysicalFace
 
   par_for("sc_hflx_x1", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie+1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    bool blo = (mb_bcs.d_view(m, BoundaryFace::inner_x1) != BoundaryFlag::block);
-    bool bhi = (mb_bcs.d_view(m, BoundaryFace::outer_x1) != BoundaryFlag::block);
+    bool blo = IsPhysicalFace(mb_bcs.d_view(m, BoundaryFace::inner_x1));
+    bool bhi = IsPhysicalFace(mb_bcs.d_view(m, BoundaryFace::outer_x1));
     bool bdry = (i == is && blo) || (i == ie+1 && bhi);
     Real h = 0.0;
     for (int angg = 0; angg < nang_tot_; ++angg) {
@@ -293,8 +305,8 @@ void SC::BuildHFlux() {
   if (multi_d) {
     par_for("sc_hflx_x2", DevExeSpace(), 0, nmb1, ks, ke, js, je+1, is, ie,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
-      bool blo = (mb_bcs.d_view(m, BoundaryFace::inner_x2) != BoundaryFlag::block);
-      bool bhi = (mb_bcs.d_view(m, BoundaryFace::outer_x2) != BoundaryFlag::block);
+      bool blo = IsPhysicalFace(mb_bcs.d_view(m, BoundaryFace::inner_x2));
+      bool bhi = IsPhysicalFace(mb_bcs.d_view(m, BoundaryFace::outer_x2));
       bool bdry = (j == js && blo) || (j == je+1 && bhi);
       Real h = 0.0;
       for (int angg = 0; angg < nang_tot_; ++angg) {
@@ -310,8 +322,8 @@ void SC::BuildHFlux() {
   if (three_d) {
     par_for("sc_hflx_x3", DevExeSpace(), 0, nmb1, ks, ke+1, js, je, is, ie,
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
-      bool blo = (mb_bcs.d_view(m, BoundaryFace::inner_x3) != BoundaryFlag::block);
-      bool bhi = (mb_bcs.d_view(m, BoundaryFace::outer_x3) != BoundaryFlag::block);
+      bool blo = IsPhysicalFace(mb_bcs.d_view(m, BoundaryFace::inner_x3));
+      bool bhi = IsPhysicalFace(mb_bcs.d_view(m, BoundaryFace::outer_x3));
       bool bdry = (k == ks && blo) || (k == ke+1 && bhi);
       Real h = 0.0;
       for (int angg = 0; angg < nang_tot_; ++angg) {

@@ -170,7 +170,10 @@ void SCQradBdryErrors(ParameterInput *pin, Mesh *pm) {
       int d = f/2;
       if (d == 1 && !multi_d) continue;
       if (d == 2 && !three_d) continue;
-      if (mb_bcs.h_view(m,f) == BoundaryFlag::block) continue;   // has a neighbour
+      // a face with something across it is not a boundary: block, and also periodic,
+      // which a domain-edge block reports as the mesh flag even though the tree wraps
+      BoundaryFlag bf = mb_bcs.h_view(m,f);
+      if (bf == BoundaryFlag::block || bf == BoundaryFlag::periodic) continue;
       const bool hi_end = (f % 2 == 1);
       const Real nsign = hi_end ? 1.0 : -1.0;     // outward normal along +d
       const Real area = (d == 0) ? dx2*dx3 : ((d == 1) ? dx1*dx3 : dx1*dx2);

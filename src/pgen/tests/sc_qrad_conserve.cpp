@@ -87,21 +87,49 @@ void SCQradConserveErrors(ParameterInput *pin, Mesh *pm) {
     }
   }
 
-  // Face flux vs the mean of the cell-centred moments, on faces with two interior
-  // neighbours only. Zero unless a differential form ran, since hflx is unallocated.
-  Real fmax = 0.0, fdiff = 0.0;
+  // Two independent views of the x1 face flux. Zero unless a differential form ran,
+  // since hflx is then unallocated.
+  //   fdiff  vs the mean of the cell-centred MOMENTS, on faces with two interior
+  //          neighbours. Those are the same quantity by two routes -- BuildHFlux
+  //          averages intensities and then takes the moment, moments does the reverse --
+  //          so this checks the route, and it can only run where moments is valid.
+  //   gdiff  vs the mean of the INTENSITIES computed here on the host, over every face
+  //          including the ones on a block edge. On a strictly periodic mesh every face
+  //          is interior, ghosts and all, so every one of them must take the mean. This
+  //          is what catches a face being misclassified as a physical boundary: the
+  //          boundary rule also conserves and also agrees with the moments away from the
+  //          block edge, so nothing else here would notice.
+  Real fmax = 0.0, fdiff = 0.0, gdiff = 0.0;
   if (psc->qrad_form != nr_radiation::QradForm::integral) {
     auto mom_h = Kokkos::create_mirror_view(psc->moments);
     Kokkos::deep_copy(mom_h, psc->moments);
     auto f1_h = Kokkos::create_mirror_view(psc->hflx.x1f);
     Kokkos::deep_copy(f1_h, psc->hflx.x1f);
+    auto ir_h = Kokkos::create_mirror_view(psc->ir);
+    Kokkos::deep_copy(ir_h, psc->ir);
+    auto &mu = psc->pang->mu;
+    auto &wmu = psc->pang->wmu;
+    mu.template sync<HostMemSpace>();
+    wmu.template sync<HostMemSpace>();
+    const int nang = psc->pang->nang;
+    const int nang_tot = psc->nang_tot;
     for (int m=0; m<=nmb1; ++m) {
       for (int k=ks; k<=ke; ++k) {
         for (int j=js; j<=je; ++j) {
-          for (int i=is+1; i<=ie; ++i) {
-            Real mean = 0.5*(mom_h(m,1,k,j,i-1) + mom_h(m,1,k,j,i));
-            fdiff = std::fmax(fdiff, std::fabs(f1_h(m,0,k,j,i) - mean));
+          for (int i=is; i<=ie+1; ++i) {
+            Real mean_ir = 0.0;
+            for (int angg = 0; angg < nang_tot; ++angg) {
+              int oct = angg / nang;
+              int a = angg - oct*nang;
+              mean_ir += wmu.h_view(a) * mu.h_view(oct, a, 0)
+                         * 0.5*(ir_h(m,angg,k,j,i-1) + ir_h(m,angg,k,j,i));
+            }
+            gdiff = std::fmax(gdiff, std::fabs(f1_h(m,0,k,j,i) - mean_ir));
             fmax = std::fmax(fmax, std::fabs(f1_h(m,0,k,j,i)));
+            if (i > is && i <= ie) {
+              Real mean = 0.5*(mom_h(m,1,k,j,i-1) + mom_h(m,1,k,j,i));
+              fdiff = std::fmax(fdiff, std::fabs(f1_h(m,0,k,j,i) - mean));
+            }
           }
         }
       }
@@ -112,19 +140,21 @@ void SCQradConserveErrors(ParameterInput *pin, Mesh *pm) {
   Real sbuf[2] = {sum_q, sum_abs};
   MPI_Allreduce(MPI_IN_PLACE, sbuf, 2, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
   sum_q = sbuf[0]; sum_abs = sbuf[1];
-  Real mbuf[2] = {fdiff, fmax};
-  MPI_Allreduce(MPI_IN_PLACE, mbuf, 2, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
-  fdiff = mbuf[0]; fmax = mbuf[1];
+  Real mbuf[3] = {fdiff, gdiff, fmax};
+  MPI_Allreduce(MPI_IN_PLACE, mbuf, 3, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+  fdiff = mbuf[0]; gdiff = mbuf[1]; fmax = mbuf[2];
 #endif
 
   // normalised against the total magnitude, so the number is scale-free and a run in
   // which Q happens to be small everywhere is not flattered
   const Real resid = (sum_abs > 0.0) ? std::fabs(sum_q)/sum_abs : std::fabs(sum_q);
   const Real face_rel = (fmax > 0.0) ? fdiff/fmax : fdiff;
+  const Real mean_rel = (fmax > 0.0) ? gdiff/fmax : gdiff;
 
   std::cout << "SC qrad conserve (" << psc->qrad_form_name << "): |Sum Q dV| / Sum |Q| dV"
             << " = " << resid << "  (Sum Q dV = " << sum_q << ", Sum |Q| dV = " << sum_abs
-            << "; face vs moments " << face_rel << "; " << psc->niter_last << " sweeps)"
+            << "; face vs moments " << face_rel << ", vs mean " << mean_rel
+            << "; " << psc->niter_last << " sweeps)"
             << std::endl;
 
   if (global_variable::my_rank == 0) {
@@ -135,11 +165,11 @@ void SCQradConserveErrors(ParameterInput *pin, Mesh *pm) {
     } else {                                   // new -> write header
       pf = std::fopen(fname.c_str(), "w");
       std::fprintf(pf, "# Nx1  Nx2  Nx3   Ncycle   residual     SumQdV       "
-                       "Sum|Q|dV     face-vs-mom  niter\n");
+                       "Sum|Q|dV     face-vs-mom  face-vs-mean niter\n");
     }
-    std::fprintf(pf, "%04d  %04d  %04d  %05d  %e %e %e %e %d\n",
+    std::fprintf(pf, "%04d  %04d  %04d  %05d  %e %e %e %e %e %d\n",
                  pm->mesh_indcs.nx1, pm->mesh_indcs.nx2, pm->mesh_indcs.nx3, pm->ncycle,
-                 resid, sum_q, sum_abs, face_rel, psc->niter_last);
+                 resid, sum_q, sum_abs, face_rel, mean_rel, psc->niter_last);
     std::fclose(pf);
   }
 
