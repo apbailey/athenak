@@ -35,6 +35,7 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     brad("sc_brad",1,1,1,1),
     moments("sc_moments",1,1,1,1,1),
     j_prev("sc_j_prev",1,1,1,1,1),
+    hflx("sc_hflx",1,1,1,1,1),
     qrad("sc_qrad",1,1,1,1),
     sigma_a("sc_sigma_a",1,1,1,1,1),
     pmy_pack(ppack) {
@@ -220,6 +221,15 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   // full width once, here: a restart rebuilds slot 0 from the restored ir before the
   // outputs are built, and Kokkos::realloc does not preserve contents
   Kokkos::realloc(moments, nmb, 10, ncells3, ncells2, ncells1);
+  // ncells* already carry 2*ng ghost cells, which is more than the one extra face each
+  // direction needs, so no +1 here (the radiation.cpp iflx idiom). Zeroed because the
+  // dimensions a run does not have are never written and must not be read as garbage.
+  Kokkos::realloc(hflx.x1f, nmb, 1, ncells3, ncells2, ncells1);
+  Kokkos::realloc(hflx.x2f, nmb, 1, ncells3, ncells2, ncells1);
+  Kokkos::realloc(hflx.x3f, nmb, 1, ncells3, ncells2, ncells1);
+  Kokkos::deep_copy(hflx.x1f, 0.0);
+  Kokkos::deep_copy(hflx.x2f, 0.0);
+  Kokkos::deep_copy(hflx.x3f, 0.0);
   Kokkos::realloc(j_prev, nmb, 1, ncells3, ncells2, ncells1);
   Kokkos::realloc(qrad, nmb, ncells3, ncells2, ncells1);
   Kokkos::realloc(sigma_a, nmb, 1, ncells3, ncells2, ncells1);

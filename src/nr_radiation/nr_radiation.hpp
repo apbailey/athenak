@@ -48,6 +48,12 @@ struct SCTaskIDs {
   TaskID sc_newdt;  // radiation-relaxation timestep (stagen, after hydro/mhd newdt)
   // boundary-exchange tasks for the "sc_bvals" task list (driven by ExecuteTaskList)
   TaskID ir_irecv, ir_rest, ir_send, ir_recv, ir_bcs, ir_prol, ir_csend, ir_crecv;
+  // the srad-only list: same wrapper functions as below, a separate chain so a solve can
+  // refresh the source function without moving ir (nvar=nang_tot) as well
+  // coarse-fine correction of the face-centred H (Stage 2), on pbval_srad's flux path
+  TaskID hflx_irecv, hflx_send, hflx_recv, hflx_csend, hflx_crecv;
+  TaskID sronly_irecv, sronly_rest, sronly_send, sronly_recv,
+         sronly_bcs, sronly_prol, sronly_csend, sronly_crecv;
   TaskID srad_irecv, srad_rest, srad_send, srad_recv,
          srad_bcs, srad_prol, srad_csend, srad_crecv;
 };
@@ -167,6 +173,10 @@ class SC {
   DvceArray5D<Real> moments;
   DvceArray5D<Real> j_prev; // J from the previous sweep (residual scratch)
   DvceArray4D<Real> qrad;       // radiative heating/cooling rate of the gas
+  // face-centred first moment, 0.5*(H(i-1) + H(i)), nvar=1 per direction. Differencing it
+  // over a cell gives Davis Eq. 28 and telescopes within a level by construction; across
+  // coarse-fine faces it is corrected on pbval_srad's flux path (see AssembleSCTasks).
+  DvceFaceFld5D<Real> hflx;
   // absorption coefficient per unit volume (nmb, 1, nx3, nx2, nx1); nvar=1 5D so it is
   // directly registrable as a stored output variable. Written every solve by the opacity
   // hook, else kappa_a * rho; the sweep reads the copy chi
@@ -192,6 +202,15 @@ class SC {
   Real dtnew;
 
   SCTaskIDs id;
+
+  // ir ghost bookkeeping for the post-sweep exchange (see SolveTransfer). The exchange
+  // now runs AFTER the sweep, so a solve inherits ghosts from the previous one -- true
+  // except at the very first solve, after a restart, and after any remesh or load
+  // balance, where a full exchange must run first. ir_ghosts_seq_ tracks
+  // Mesh::GetAMRLoadBalanceUpdateSeq, which MarkMeshUpdated bumps on every
+  // refine/derefine and the balancing that follows.
+  bool ir_ghosts_fresh_ = false;
+  int ir_ghosts_seq_ = -1;
 
   void AssembleSCTasks(std::map<std::string, std::shared_ptr<TaskList>> tl);
   TaskStatus SolveTransfer(Driver *pdrive, int stage);
@@ -229,7 +248,23 @@ class SC {
   void ApplyPhysicalBCsSource();
   void ComputeJ();       // J only, into moments slot 0 (every sweep; after a remesh)
   Real ResidualJ();      // max symmetric relative change J vs j_prev, allreduced
-  void ComputeHK();      // H_i and K_ij into moments slots 1-9 (once per solve)
+  void ComputeHK();      // H_i and K_ij into slots 1-9, active + 1 ghost layer
+  void FillHflx();       // face-centred H from the cell-centred slots 1-3
+  void BoundaryHflxAtOpenFaces();  // inflow/vacuum faces: per-ray upwind face flux
+
+  // coarse-fine flux correction of hflx, mirroring Hydro's. Each is a no-op unless the
+  // mesh is multilevel. They ride pbval_srad's FLUX path, which is separate from its vars
+  // path and unused otherwise -- srad never flux-corrects, so those buffers sit allocated
+  // and idle at nvar = 1, exactly hflx's nvar.
+  TaskStatus InitRecvHflx(Driver *pdrive, int stage);
+  TaskStatus SendHflx(Driver *pdrive, int stage);
+  TaskStatus RecvHflx(Driver *pdrive, int stage);
+  TaskStatus ClearSendHflx(Driver *pdrive, int stage);
+  TaskStatus ClearRecvHflx(Driver *pdrive, int stage);
+
+  // Blend window for Davis Eq.27 -> Eq.28, in tau = chi * min(dx over active dims).
+  // Exactly one decade so the smoothstep argument is already in [0,1].
+  static constexpr Real kTauLo = 0.3, kTauHi = 3.0;
   void ComputeQrad();
 
   // formal solution (sc/formal_solution.cpp): dispatch on sweep_kernel. Public because

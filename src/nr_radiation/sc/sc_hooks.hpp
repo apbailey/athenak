@@ -39,6 +39,14 @@
 //!    fractions of a fixed T^4 total); this hook fills the source per cell.
 //!  - Enroll BEFORE any `if (restart) return;` in the pgen so restarted runs re-enroll
 //!    (the pgen runs on the restart path with restart=true).
+//!
+//! A separate obligation on `user_bcs_func`, if a pgen writes ghost intensities itself:
+//! fill EVERY ray, not only the ones entering through that face. The sweep reads a ghost
+//! only for entering rays -- an outgoing ray's upwind cell is interior -- so filling the
+//! incoming half used to be enough. It is not any more: ComputeHK takes angular moments
+//! one layer into the ghosts, and a moment sums over all rays, so outgoing ghost entries
+//! left at zero corrupt the face flux and hence Q_rad. They do so silently: ir, J and
+//! H at active cells are unaffected, so nothing in the output moves.
 
 class MeshBlockPack;
 

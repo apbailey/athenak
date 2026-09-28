@@ -81,6 +81,29 @@ void SC::AssembleSCTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) {
   id.ir_csend = vtl->AddTask(&SC::ClearSendIr, this, id.srad_csend);
   id.srad_crecv = vtl->AddTask(&SC::ClearRecvSrad, this, id.ir_csend);
   id.ir_crecv = vtl->AddTask(&SC::ClearRecvIr, this, id.srad_crecv);
+
+  // sc_bvals_srad: the srad half alone, for the start of a solve. B changes between
+  // solves (the fluid moved), ir does not, so the source needs refreshing while ir's
+  // ghosts are still the ones the previous solve's post-sweep exchange left. Reuses the
+  // same wrappers; only the chain is new.
+  auto &stl = tl["sc_bvals_srad"];
+  id.sronly_irecv = stl->AddTask(&SC::InitRecvSrad, this, none);
+  id.sronly_rest = stl->AddTask(&SC::RestrictSrad, this, id.sronly_irecv);
+  id.sronly_send = stl->AddTask(&SC::SendSrad, this, id.sronly_rest);
+  id.sronly_recv = stl->AddTask(&SC::RecvSrad, this, id.sronly_send);
+  id.sronly_bcs = stl->AddTask(&SC::ApplyPhysicalBCsSrad, this, id.sronly_recv);
+  id.sronly_prol = stl->AddTask(&SC::ProlongateSrad, this, id.sronly_bcs);
+  id.sronly_csend = stl->AddTask(&SC::ClearSendSrad, this, id.sronly_prol);
+  id.sronly_crecv = stl->AddTask(&SC::ClearRecvSrad, this, id.sronly_csend);
+
+  // sc_flxcor: coarse-fine correction of hflx. Runs once per solve, after FillHflx, and
+  // only does anything on a multilevel mesh.
+  auto &ftl = tl["sc_flxcor"];
+  id.hflx_irecv = ftl->AddTask(&SC::InitRecvHflx, this, none);
+  id.hflx_send = ftl->AddTask(&SC::SendHflx, this, id.hflx_irecv);
+  id.hflx_recv = ftl->AddTask(&SC::RecvHflx, this, id.hflx_send);
+  id.hflx_csend = ftl->AddTask(&SC::ClearSendHflx, this, id.hflx_recv);
+  id.hflx_crecv = ftl->AddTask(&SC::ClearRecvHflx, this, id.hflx_csend);
 }
 
 //----------------------------------------------------------------------------------------
@@ -179,6 +202,70 @@ void SC::UpdateSource() {
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     srad_(m,0,k,j,i) = brad_(m,k,j,i);
   });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn SC::InitRecvHflx / SendHflx / RecvHflx / ClearSendHflx / ClearRecvHflx
+//! \brief Coarse-fine correction of the face-centred H, mirroring Hydro's flux tasks.
+//!
+//! Within a level the face form already telescopes: the face between two cells is one
+//! number entering both divergences with opposite signs. Across a coarse-fine boundary it
+//! does not -- the coarse block computes one face, the four fine blocks compute four, and
+//! nothing makes them agree. RecvAndUnpackFluxCC REPLACES the coarse face with the
+//! arithmetic mean of the fine ones, and since A_coarse = 4 A_fine on a Cartesian mesh the
+//! two sides then cancel exactly.
+//!
+//! These ride pbval_srad's FLUX path. A bvals object keeps its flux buffers separate from
+//! its vars buffers (.flux vs .vars, flux_req vs vars_req, comm_flux vs comm_vars), and
+//! srad never flux-corrects, so they sit allocated and idle. RecvAndUnpackFluxCC reads
+//! nvar per call from flx.x1f.extent_int(1), so the only invariant needed is that the
+//! buffers are at least as wide as hflx -- they are exactly as wide, both nvar = 1.
+//!
+//! Every one is a no-op on a uniform mesh.
+
+TaskStatus SC::InitRecvHflx(Driver *pdrive, int stage) {
+  (void)pdrive;
+  TaskStatus tstat = TaskStatus::complete;
+  if (pmy_pack->pmesh->multilevel && (stage >= 0)) {
+    tstat = pbval_srad->InitFluxRecv(1);
+  }
+  return tstat;
+}
+
+TaskStatus SC::SendHflx(Driver *pdrive, int stage) {
+  (void)pdrive; (void)stage;
+  TaskStatus tstat = TaskStatus::complete;
+  if (pmy_pack->pmesh->multilevel) {
+    tstat = pbval_srad->PackAndSendFluxCC(hflx);
+  }
+  return tstat;
+}
+
+TaskStatus SC::RecvHflx(Driver *pdrive, int stage) {
+  (void)pdrive; (void)stage;
+  TaskStatus tstat = TaskStatus::complete;
+  if (pmy_pack->pmesh->multilevel) {
+    tstat = pbval_srad->RecvAndUnpackFluxCC(hflx);
+  }
+  return tstat;
+}
+
+TaskStatus SC::ClearSendHflx(Driver *pdrive, int stage) {
+  (void)pdrive; (void)stage;
+  TaskStatus tstat = TaskStatus::complete;
+  if (pmy_pack->pmesh->multilevel) {
+    tstat = pbval_srad->ClearFluxSend();
+  }
+  return tstat;
+}
+
+TaskStatus SC::ClearRecvHflx(Driver *pdrive, int stage) {
+  (void)pdrive; (void)stage;
+  TaskStatus tstat = TaskStatus::complete;
+  if (pmy_pack->pmesh->multilevel) {
+    tstat = pbval_srad->ClearFluxRecv();
+  }
+  return tstat;
 }
 
 //----------------------------------------------------------------------------------------
@@ -548,6 +635,21 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
   auto mom_ = moments;
   auto jprev_ = j_prev;
 
+  // Ghost ir is whatever the previous solve's post-sweep exchange left, which is what the
+  // next sweep wants: ir does not change between solves. Three cases break that -- the
+  // first solve, a restart (SC is constructed fresh, so the flag is false), and any
+  // remesh or load balance (the counter moves) -- each needs one full exchange first.
+  // Otherwise only srad is refreshed, because B follows the fluid and the fluid moved.
+  // ApplyPhysicalBCs runs either way so a time-dependent user BC is stamped at THIS t,
+  // not at the end of the previous solve; it is local and idempotent for static BCs.
+  if (!ir_ghosts_fresh_ ||
+      ir_ghosts_seq_ != pmy_pack->pmesh->GetAMRLoadBalanceUpdateSeq()) {
+    pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_bvals", 0);
+  } else {
+    ApplyPhysicalBCs();
+    pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_bvals_srad", 0);
+  }
+
   for (int it = 0; it < iter_max; ++it) {
     // carry J forward as the residual's reference. A par_for rather than a deep_copy: the
     // source is slot 0 of the moments array, and ResidualJ reads only the active range,
@@ -556,9 +658,15 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
     KOKKOS_LAMBDA(int m, int k, int j, int i) {
       jprev_(m,0,k,j,i) = mom_(m,0,k,j,i);
     });
-    // Davis sec. 3.5 / Athena-C order: refresh ghosts before the formal solution
-    pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_bvals", 0);
     FormalSolution();
+    // The exchange sits AFTER the sweep so the ghost ir the moments will be taken from is
+    // the current one: ComputeHK reads H one cell into the ghosts, and two blocks sharing
+    // a face must form the same face flux from it. A converged break still leaves fresh
+    // ghosts because this runs before the test. Each sweep still sees the previous
+    // iteration's active values, exactly as it did when the exchange led.
+    pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_bvals", 0);
+    ir_ghosts_fresh_ = true;
+    ir_ghosts_seq_ = pmy_pack->pmesh->GetAMRLoadBalanceUpdateSeq();
     ComputeJ();
     max_rel = ResidualJ();
 
@@ -586,6 +694,15 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
   }
 
   ComputeHK();
+  FillHflx();
+  // overwrites the faces FillHflx just wrote on open boundaries: the average is invalid
+  // across the kink an open boundary puts in the intensity field. Must follow FillHflx.
+  BoundaryHflxAtOpenFaces();
+  // coarse-fine correction: the coarse face is replaced by the mean of the fine faces, so
+  // both sides of a refinement boundary difference the same number. No-op if uniform.
+  if (pmy_pack->pmesh->multilevel) {
+    pdrive->ExecuteTaskList(pmy_pack->pmesh, "sc_flxcor", 0);
+  }
   ComputeQrad();
   return TaskStatus::complete;
 }
