@@ -598,6 +598,13 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
 
   ComputeHK();
   ComputeQrad();
+
+  // Bound the gas-energy update this Q is about to drive. Athena-C's ordering
+  // (radtrans_dt between formal_solution and rad_to_hydro, main.c:687-689): the limit
+  // must constrain the very step that applies this Q, so it is taken here rather than in
+  // NewTimeStep, which runs in "stagen" and would set it one cycle late. No-op unless
+  // <nr_radiation>/cfl_qrad > 0, i.e. unless a differential form is in use.
+  LimitDtByQrad();
   return TaskStatus::complete;
 }
 

@@ -153,6 +153,20 @@ class SC {
   QradForm qrad_form;
   std::string qrad_form_name;      // as given in the deck, for messages
 
+  // Fraction of a cell's internal energy Q_rad may remove in one step, imposed as
+  //   dt <= cfl_qrad * e_int / |Q|
+  // at the end of SolveTransfer (sc/coupling.cpp, LimitDtByQrad). 0 disables it. The
+  // default depends on qrad_form: the integral form is already bounded by the relaxation
+  // rate in sc/newdt.cpp, the differential forms are not. See
+  // theory/timestep-constraints.md Sec. 4 and 6.
+  Real cfl_qrad;
+  bool cfl_qrad_specified;         // <nr_radiation>/cfl_qrad present in the input
+  // Persistent severe limiting means the explicit operator split is out of regime, not
+  // that dt needs tuning, so LimitDtByQrad warns once. A brief episode during a
+  // transient is normal and self-corrects, hence the consecutive-cycle counter.
+  int qrad_dt_nsevere;             // consecutive cycles cfl_qrad has dominated badly
+  bool qrad_dt_warned;             // the once-per-run warning has been issued
+
   // iteration control
   int iter_max;
   // minimum sweeps before early exit (default 1: sweep 1 is compared to the
@@ -256,6 +270,11 @@ class SC {
 
   // stagen task: radiation-relaxation timestep
   TaskStatus NewTimeStep(Driver *pdrive, int stage);
+
+  // Q_rad energy-depletion timestep limit, called at the end of SolveTransfer so it
+  // constrains the very step that applies this Q (sc/coupling.cpp). No-op when
+  // cfl_qrad == 0, which is the default for qrad_form = integral.
+  void LimitDtByQrad();
 
   // helpers called from SolveTransfer. UpdateOpacity also runs wherever the relaxation
   // timestep is evaluated (NewTimeStep, driver initialization, after a remesh)

@@ -1053,6 +1053,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     SCQradBdry(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_qrad_conserve") == 0) {
     SCQradConserve(pin, is_restart);
+  } else if (pgen_fun_name.compare("sc_qrad_dt") == 0) {
+    SCQradDt(pin, is_restart);
   } else if (pgen_fun_name.compare("sc_sphere") == 0) {
     SCSphere(pin, is_restart);
   } else if (pgen_fun_name.compare("shock_tube") == 0) {

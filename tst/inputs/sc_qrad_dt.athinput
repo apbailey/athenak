@@ -1,0 +1,98 @@
+# AthenaK input: does the timestep bound the Q_rad gas-energy update?
+#
+# Cold uniform gas lit from the ix1 face. kappa_a is small and p0 is tiny, so the
+# radiation-relaxation limit of sc/newdt.cpp (nu_rad ~ T^3 sigma_a) is inert by many
+# orders of magnitude, while Q = -crat*prat*div(H) is set by the incident beam and is
+# not small. With qrad_form = divh and cfl_qrad = 0 the internal energy goes negative on
+# the first cycle; with the default cfl_qrad = 0.25 it does not. See
+# theory/timestep-constraints.md Sec. 4 and 6.
+#
+# nlim, not tlim: the guarded run is deliberately dt-limited and would take forever to
+# reach any interesting time.
+
+<comment>
+problem   = SC Q_rad energy-depletion timestep limit
+reference = Davis, Stone & Jiang 2012 Eq. 26-28, 42
+
+<job>
+basename  = SCQradDt
+
+<mesh>
+nghost    = 2
+nx1       = 32
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = inflow
+ox1_bc    = inflow
+
+nx2       = 32
+x2min     = 0.0
+x2max     = 1.0
+ix2_bc    = inflow
+ox2_bc    = inflow
+
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = inflow
+ox3_bc    = inflow
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 1
+
+<mesh_refinement>
+refinement          = none     # the coarse-fine case overrides this to adaptive
+max_nmb_per_rank    = 512
+num_levels          = 2
+refinement_interval = 1        # default 5 would not fire inside a short run
+
+# a fixed region rather than a field threshold: the gas here is uniform by construction,
+# so density-based criteria (the only ones min_max supports) would never fire, and the
+# point of the AMR case is only to guarantee a coarse-fine interface and a remesh
+<amr_criterion1>
+method       = location
+location_x1  = 0.25
+location_x2  = 0.5
+location_x3  = 0.0
+location_rad = 0.2
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = 20
+tlim       = 1.0e10
+ndiag      = 1
+
+<hydro>
+eos         = ideal
+reconstruct = plm
+rsolver     = llf
+gamma       = 1.666666666666667
+
+<nr_radiation>
+nmu          = 3
+kappa_a      = 1.0e-3
+prat         = 1.0e3
+crat         = 1.0
+affect_fluid = true
+qrad_form    = divh
+iter_max     = 20
+iter_tol     = 1.0e-10
+# cfl_qrad defaults to 0.25 for a differential form and 0 for integral. It is listed
+# explicitly here because AthenaK only accepts command-line overrides of parameters
+# that already appear in the deck; the default-selection logic is tested separately,
+# by a copy of this deck with the line removed.
+cfl_qrad     = 0.25
+
+<problem>
+pgen_name = sc_qrad_dt
+d0        = 1.0
+p0        = 1.0e-6
+i_inc     = 1.0
+
+<output1>
+file_type = log
+dcycle    = 1

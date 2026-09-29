@@ -139,6 +139,45 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
     }
   }
 
+  // Q_rad energy-depletion timestep limit ---------------------------------------------
+  // dt <= cfl_qrad * e_int / |Q|, imposed in SolveTransfer (see sc/coupling.cpp). The
+  // default has to be chosen after qrad_form, because the form is what decides whether
+  // the limit is needed at all:
+  //   integral  Q = crat*prat*sigma_a*(J - brad). In the thin COOLING limit brad > J,
+  //             so |Q| <= crat*prat*sigma_a*T^4 and e_int/|Q| >= 4/nu_rad identically:
+  //             sc/newdt.cpp already bounds it. Default 0 (off), so existing runs are
+  //             bit-identical. NOTE this does NOT make the integral form safe in the
+  //             thin HEATING limit (J >> brad), where |Q| is set by J while nu_rad is
+  //             evaluated at the cold pre-heating T -- measured to run away to
+  //             max|Q| ~ 1e11 on tst/inputs/sc_qrad_dt.athinput, and rescued by setting
+  //             this parameter. A radiation-dominated heating problem should set it
+  //             explicitly whichever form is in use.
+  //   divh      Q = -crat*prat*div(H), which is set by the radiation field and bears no
+  //   hybrid    relation to the local sigma_a: a cold, optically thin cell in a strong
+  //             field has nu_rad -> 0 while |Q| stays large. Default 0.25, which is the
+  //             value that makes this limit coincide with 1/nu_rad in the thin cooling
+  //             limit -- it inherits that calibration rather than being a new knob.
+  // Applied ON TOP OF <time>/cfl_number, exactly as 1/nu_rad is: Mesh::NewTimeStep
+  // scales every module's dtnew by cfl_no (mesh.cpp), and Athena-C likewise folds its
+  // one CourNo into radtrans_dt. The effective bound at the defaults is therefore
+  // 0.3*0.25 = 0.075*e_int/|Q|; do not "fix" 0.25 into an effective 0.25.
+  // Derivation and the comparison with Athena-C: theory/timestep-constraints.md.
+  qrad_dt_nsevere = 0;
+  qrad_dt_warned = false;
+  cfl_qrad_specified = pin->DoesParameterExist("nr_radiation", "cfl_qrad");
+  Real cfl_qrad_default = (qrad_form == QradForm::integral) ? 0.0 : 0.25;
+  cfl_qrad = pin->GetOrAddReal("nr_radiation", "cfl_qrad", cfl_qrad_default);
+  if (cfl_qrad < 0.0) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "<nr_radiation>/cfl_qrad must be non-negative (0 disables the "
+      << "Q_rad energy-depletion timestep limit); got " << cfl_qrad << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (cfl_qrad_specified && !affect_fluid && global_variable::my_rank == 0) {
+    std::cout << "### WARNING in " << __FILE__ << ": <nr_radiation>/cfl_qrad is ignored "
+      << "when affect_fluid = false; Q_rad is never added to the gas" << std::endl;
+  }
+
   // Iteration control -----------------------------------------------------------------
   iter_max = pin->GetOrAddInteger("nr_radiation", "iter_max", 100);
   iter_min = pin->GetOrAddInteger("nr_radiation", "iter_min", 1);

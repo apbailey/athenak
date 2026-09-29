@@ -5,9 +5,16 @@
 //========================================================================================
 //! \file coupling.cpp
 //! \brief Apply radiative heating/cooling to the fluid energy equation each RK stage:
-//!   u0(IEN) += beta_dt * Q_rad   (Davis 2012 Eq. 26 with Q from Eq. 27).
+//!   u0(IEN) += beta_dt * Q_rad   (Davis 2012 Eq. 26 with Q from Eq. 27 or Eq. 28),
+//! and impose the Q_rad energy-depletion timestep limit that bounds that update.
+
+#include <float.h>
+
+#include <iostream>
+#include <limits>
 
 #include "athena.hpp"
+#include "globals.hpp"
 #include "mesh/mesh.hpp"
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
@@ -15,6 +22,16 @@
 #include "nr_radiation/nr_radiation.hpp"
 
 namespace nr_radiation {
+
+namespace {
+// The depletion limit is meant to be a guard, not a governor. Measured on
+// tst/inputs/sc_qrad_dt.athinput: a factor of ~5-12 is ordinary accuracy control (it is
+// holding the per-step energy change near cfl_no*cfl_qrad), ~20-120 is the band where
+// the run is slow but correct and the unguarded run is quietly wrong, and beyond ~100
+// sustained the problem is simply outside the operator-split regime. Warn at 100.
+constexpr Real kQradDtSevere = 100.0;     // "binding by this factor" counts as severe
+constexpr int kQradDtSevereCycles = 10;   // ... and must persist this long to warn
+}  // namespace
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskStatus SC::AddQrad
@@ -36,11 +53,156 @@ TaskStatus SC::AddQrad(Driver *pdrive, int stage) {
   } else {
     u0 = pmy_pack->pmhd->u0;
   }
-  par_for("sc_addqrad", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-  KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    u0(m,IEN,k,j,i) += beta_dt * qrad_(m,k,j,i);
-  });
+  if (cfl_qrad <= 0.0) {
+    par_for("sc_addqrad", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      u0(m,IEN,k,j,i) += beta_dt * qrad_(m,k,j,i);
+    });
+    return TaskStatus::complete;
+  }
+
+  // Armed: the same update, plus a count of the cells whose internal energy it would
+  // drive non-positive. LimitDtByQrad bounds this with the Q of THIS cycle, but Q is
+  // frozen across the RK stages while the gas state moves, so a non-zero count says the
+  // margin was too thin. Reported through Mesh::ecounter, as the EOS floors are.
+  // w0(IEN) is the internal energy; u0(IEN) is the total, and a cell can keep u0 > 0
+  // while its internal energy has already gone negative -- that conflation is exactly
+  // what hides this failure in Athena-C (theory/timestep-constraints.md Sec. 5.4).
+  DvceArray5D<Real> w0;
+  if (pmy_pack->phydro != nullptr) {
+    w0 = pmy_pack->phydro->w0;
+  } else {
+    w0 = pmy_pack->pmhd->w0;
+  }
+  const int ni = ie - is + 1;
+  const int nji = (je - js + 1)*ni;
+  const int nkji = (ke - ks + 1)*nji;
+  const int nmkji = (nmb1 + 1)*nkji;
+  int nneg_ = 0;
+  Kokkos::parallel_reduce("sc_addqrad", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+  KOKKOS_LAMBDA(const int idx, int &nneg) {
+    int m = idx/nkji;
+    int k = (idx - m*nkji)/nji;
+    int j = (idx - m*nkji - k*nji)/ni;
+    int i = (idx - m*nkji - k*nji - j*ni) + is;
+    j += js;
+    k += ks;
+    Real dq = beta_dt * qrad_(m,k,j,i);
+    if (w0(m,IEN,k,j,i) + dq <= 0.0) { nneg++; }
+    u0(m,IEN,k,j,i) += dq;
+  }, Kokkos::Sum<int>(nneg_));
+  pmy_pack->pmesh->ecounter.nqrad_neg += nneg_;
   return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::LimitDtByQrad
+//! \brief Reduce Mesh::dt so that Q_rad removes at most cfl_qrad of any cell's internal
+//! energy this step:  dt <= cfl_qrad * e_int / |Q|.
+//!
+//! Called at the end of SolveTransfer, i.e. in "before_timeintegrator", before any RK
+//! stage has run. That placement is Athena-C's (radtrans_dt is called between
+//! formal_solution and rad_to_hydro, main.c:687-689) and it matters: put this in
+//! NewTimeStep instead, which runs in "stagen", and it would bound the NEXT cycle with
+//! THIS cycle's Q -- leaving it inert on cycle 0, where qrad is still zero, after every
+//! restart, and after every remesh, where qrad is not carried with the blocks.
+//!
+//! This is a second, independent upper bound, min-combined with the relaxation limit of
+//! sc/newdt.cpp -- never multiplied by it. The relaxation limit is a linearised *rate*
+//! and routes through sigma_a; it therefore bounds Eq. 27 (in the thin cooling limit
+//! 1/nu_rad = (1/4) e_int/|Q^int| identically) but not Eq. 28, whose magnitude is set by
+//! the radiation field. See theory/timestep-constraints.md Sec. 4 and 6.
+//!
+//! Only ever lowers dt, so the tlim clamp and the 2x growth cap in Mesh::NewTimeStep
+//! cannot be violated, and the next cycle's cap keys off the reduced value.
+
+void SC::LimitDtByQrad() {
+  if (cfl_qrad <= 0.0 || !affect_fluid) return;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  int nx1 = indcs.ie - is + 1;
+  int nx2 = indcs.je - js + 1;
+  int nx3 = indcs.ke - ks + 1;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  const int nkji = nx3*nx2*nx1;
+  const int nji = nx2*nx1;
+  const int nmkji = (nmb1 + 1)*nkji;
+
+  DvceArray5D<Real> w0;
+  if (pmy_pack->phydro != nullptr) {
+    w0 = pmy_pack->phydro->w0;
+  } else if (pmy_pack->pmhd != nullptr) {
+    w0 = pmy_pack->pmhd->w0;
+  } else {
+    return;   // no fluid: Q is never applied
+  }
+  auto qrad_ = qrad;
+  const Real cfl_q = cfl_qrad;
+  Real dt_q = std::numeric_limits<Real>::max();
+  Kokkos::parallel_reduce("sc_qrad_dt",
+    Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(const int idx, Real &ldt) {
+      int m = idx/nkji;
+      int k = (idx - m*nkji)/nji;
+      int j = (idx - m*nkji - k*nji)/nx1;
+      int i = (idx - m*nkji - k*nji - j*nx1) + is;
+      j += js;
+      k += ks;
+      Real eint = w0(m,IEN,k,j,i);
+      if (eint <= 0.0) return;   // already broken; leave it to the EOS floor, and do not
+                                 // feed a non-positive dt into the reduction
+      // srcterms/srcterms_newdt.cpp idiom: a FLT_MIN floor on the rate, so a cell with
+      // Q == 0 contributes eint/FLT_MIN and never wins the minimum
+      Real qmag = FLT_MIN + fabs(qrad_(m,k,j,i));
+      ldt = fmin(ldt, cfl_q * eint / qmag);
+    }, Kokkos::Min<Real>(dt_q));
+
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &dt_q, 1, MPI_ATHENA_REAL, MPI_MIN, MPI_COMM_WORLD);
+#endif
+  // cfl_no scales every module's timescale in Mesh::NewTimeStep; apply it here too so
+  // this bound carries the same single safety factor as 1/nu_rad does
+  Real dt_lim = (pmy_pack->pmesh->cfl_no)*dt_q;
+
+  // How much more restrictive is this than everything else? Compare against the OTHER
+  // modules' raw dtnew, not against pmesh->dt: the 2x growth cap (mesh.cpp) means
+  // pmesh->dt already tracks this limit's own reduction from the previous cycle, so
+  // pmesh->dt/dt_lim collapses to ~2 after cycle 0 however severe the limiting is.
+  // phydro/pmhd->dtnew and this->dtnew were last written at the end of the previous
+  // cycle (and in Driver::Initialize before cycle 0), and neither knows about qrad, so
+  // their minimum is what dt would have been without the depletion limit.
+  Real dt_other = dtnew;                                   // the relaxation limit
+  if (pmy_pack->phydro != nullptr) {
+    dt_other = fmin(dt_other, pmy_pack->phydro->dtnew);    // the hydro CFL
+  } else if (pmy_pack->pmhd != nullptr) {
+    dt_other = fmin(dt_other, pmy_pack->pmhd->dtnew);
+  }
+  dt_other *= pmy_pack->pmesh->cfl_no;
+  if (dt_lim < dt_other/kQradDtSevere) {
+    ++qrad_dt_nsevere;
+  } else {
+    qrad_dt_nsevere = 0;   // a transient episode ended; dt recovers at 2x per cycle
+  }
+  if (qrad_dt_nsevere >= kQradDtSevereCycles && !qrad_dt_warned) {
+    qrad_dt_warned = true;
+    if (global_variable::my_rank == 0) {
+      std::cout << "### WARNING in " << __FILE__ << ": the Q_rad depletion limit "
+        << "(<nr_radiation>/cfl_qrad = " << cfl_qrad << ") has been the binding timestep "
+        << "constraint by a factor >= " << kQradDtSevere << " for "
+        << kQradDtSevereCycles << " consecutive cycles (now " << (dt_other/dt_lim)
+        << "x below the next-smallest limit; dt = " << dt_lim << ")." << std::endl
+        << "    Sustained severe limiting means the explicit operator-split source "
+        << "update is outside its regime of validity (Davis, Stone & Jiang 2012 Sec. 4: "
+        << "the Boltzmann number is below unity here), not that the timestep needs "
+        << "tuning -- the run will be correct but may be unaffordably slow." << std::endl
+        << "    Consider an implicit or sub-cycled source update, or a weaker coupling "
+        << "(prat, crat, kappa_a). A brief episode during a transient is normal and "
+        << "self-corrects. Issued once per run; see theory/timestep-constraints.md."
+        << std::endl;
+    }
+  }
+
+  if (dt_lim < pmy_pack->pmesh->dt) { pmy_pack->pmesh->dt = dt_lim; }
 }
 
 }  // namespace nr_radiation
