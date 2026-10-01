@@ -1,0 +1,107 @@
+# AthenaK input: closed-box conservation of the differential coupling (Davis Eq. 28)
+# ACROSS A COARSE-FINE INTERFACE.
+#
+# Same problem and problem generator as sc_qrad_conserve.athinput; the difference is that
+# the refined patch is STATIC, so a level jump is guaranteed to exist when the residual is
+# measured. The adaptive deck cannot promise that -- it refines every block at every
+# level, leaving a uniform single-level mesh with no coarse-fine face in it, which is how
+# "coarse-fine conservation needs no flux correction" was wrongly concluded on 2026-09-29.
+#
+# Before the coarse-fine flux correction existed, the two sides of such a face disagreed on
+# the flux there (the coarse ghost is a volume average over two layers normal to the face,
+# the fine side uses the layer that touches it) and the divergence stopped telescoping:
+# residual 5.4e-04 in 2D, 4.7e-05 in 3D, against 1.6e-16 with refinement off.
+#
+# The pytest wrapper drives the variants off this one deck:
+#   mesh_refinement/refinement = none  -> the uniform control
+#   refined_region2/level = 2          -> nested L1+L2
+#   mesh/nx3, meshblock/nx3, ...       -> 3D
+# every key those overrides touch must therefore be present below, since AthenaK only
+# overrides parameters that already exist in the deck.
+
+<comment>
+problem   = SC differential Q_rad conservation across a coarse-fine interface
+reference = Davis, Stone & Jiang 2012 Eq. 26-28; Berger & Colella 1989 (flux correction)
+
+<mesh>
+nghost    = 2
+nx1       = 32
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = periodic
+ox1_bc    = periodic
+
+nx2       = 32
+x2min     = 0.0
+x2max     = 1.0
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8          # must be divisible by 2 under refinement (build_tree.cpp)
+nx2       = 8
+nx3       = 1
+
+<mesh_refinement>
+refinement = static    # the uniform control overrides this to none
+
+# One level-1 patch, interior to the domain, so the jump cannot migrate or vanish.
+<refined_region1>
+level = 1
+x1min = 0.25
+x1max = 0.5
+x2min = 0.25
+x2max = 0.5
+x3min = 0.25          # read only in 3D; present so the 3D variant can override it
+x3max = 0.5
+
+# Nested inside region1. Shipped at level 1, where it is a no-op (region1 is already
+# level 1); the nested case overrides it to 2, which puts a 0-1 and a 1-2 jump in the
+# same mesh.
+<refined_region2>
+level = 1
+x1min = 0.3125
+x1max = 0.4375
+x2min = 0.3125
+x2max = 0.4375
+x3min = 0.3125
+x3max = 0.4375
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = 2
+tlim       = 1.0
+ndiag      = 1
+
+<hydro>
+eos         = ideal
+reconstruct = plm
+rsolver     = llf
+gamma       = 1.66666666667
+
+<nr_radiation>
+nmu               = 3
+kappa_a           = 4.0
+prat              = 1.0
+crat              = 1.0
+affect_fluid      = true
+sweep_kernel      = wavefront
+tile_size         = 0
+iter_max          = 20
+iter_tol          = 1.0e-12
+qrad_form         = divh
+
+<problem>
+pgen_name = sc_qrad_conserve
+d0        = 1.0
+p0        = 1.0
+amp       = 0.3
+tol       = 1.0e-2

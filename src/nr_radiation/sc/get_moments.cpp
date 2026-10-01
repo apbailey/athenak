@@ -180,6 +180,7 @@ void SC::ComputeQrad() {
     case QradForm::divh:
     case QradForm::hybrid:
       BuildHFlux();
+      CorrectHFluxCoarseFine();
       ComputeQradDivH();
       break;
   }
@@ -336,6 +337,65 @@ void SC::BuildHFlux() {
       f3(m, 0, k, j, i) = h;
     });
   }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SC::CorrectHFluxCoarseFine
+//! \brief Replace the coarse side's face flux with the area-weighted mean of the fine
+//! face fluxes over the same face, so that both sides of a coarse-fine interface use ONE
+//! number for it. No-op unless a differential form is in use on a multilevel mesh, in
+//! which case pbval_hflx is nullptr and this returns immediately.
+//!
+//! WHY IT IS NEEDED. Eq. 28 telescopes only because each interior face enters two cells
+//! with opposite signs -- the SAME number, twice. At a coarse-fine face the two sides
+//! compute different numbers, because they are built from different data:
+//!
+//!   coarse side   0.5*(H_C + H_G), and its ghost H_G is RestrictCC of the fine block,
+//!                 a plain volume average over 2x2 (2D) or 2x2x2 (3D) cells -- including
+//!                 TWO layers normal to the face, so H_G = 0.5*(L1 + L2).
+//!   fine side     0.5*(ghost + L1), and its ghost is ProlongCC of the coarse cell, so
+//!                 the children adjacent to the face have transverse mean H_C + dvar1.
+//!
+//! The gap is 0.5*[dvar1 + 0.5*(L1 - L2)], identically zero for a field linear in x
+//! (dvar1 = 0.5*a*h against 0.5*(L1-L2) = -0.5*a*h) and O(dx^2) otherwise. Measured
+//! residual |Sum Q dV|/Sum|Q|dV = 5.4e-04 (2D, one level jump), 4.5e-04 (2D, nested),
+//! 4.7e-05 (3D), against 1.6e-16 on the same decks with refinement off, and converging at
+//! second order -- a truncation-level flux mismatch, not round-off.
+//!
+//! The coarse side cannot repair this alone: restriction has already destroyed the layer
+//! adjacent to the face. One number per coarse face must travel fine -> coarse, which is
+//! exactly what PackAndSendFluxCC does -- it packs the fine faces at a FIXED normal index
+//! (fi = 2*il - cis, i.e. is or ie+1 since cis == is) with only a transverse average,
+//! 0.5* in 2D and 0.25* in 3D. hflx is per-unit-area on a uniform Cartesian face and
+//! ComputeQradDivH divides by dx, so that plain mean is the correct conservative
+//! restriction and no area weight is applied anywhere.
+//!
+//! Conservation alone does not single out this convention -- overwriting every FINE face
+//! with the coarse value telescopes too -- but it is the one that keeps the resolution
+//! that was paid for at the interface, and it is what hydro, MHD and the GR radiation
+//! module already do. Note this buys CONSERVATION, not accuracy: the agreed value is
+//! still built from a prolongated ghost on one side, so the interface flux remains
+//! coarse-grid limited. The O(dx^2) error does not leave the solution, it stops being a
+//! conservation error.
+//!
+//! NOT a DSJ12/JSD12 algorithm: the papers are silent on refinement and Athena-C's
+//! rad_to_hydro has no coarse-fine awareness. This is Berger & Colella (1989) as already
+//! implemented in src/bvals/flux_correct_cc.cpp, applied to hflx unchanged. Recorded as a
+//! deliberate deviation in logs/impl-athenak.md.
+//!
+//! The receives were posted at the top of SolveTransfer; see the comment there for why.
+
+void SC::CorrectHFluxCoarseFine() {
+  if (pbval_hflx == nullptr) return;
+  (void)pbval_hflx->PackAndSendFluxCC(hflx);
+  // RecvAndUnpackFluxCC returns incomplete while an MPI_Irecv is outstanding. Spinning
+  // here rather than driving a task list is not a lost overlap: the chain is linear, and
+  // "before_timeintegrator" holds nothing but this solve. The traffic is nvar = 1 over
+  // coarse-fine faces only, once per cycle, against sc_bvals moving nang_tot over every
+  // face iter_max + 1 times -- four orders of magnitude smaller.
+  while (pbval_hflx->RecvAndUnpackFluxCC(hflx) == TaskStatus::incomplete) {}
+  (void)pbval_hflx->ClearFluxSend();
+  (void)pbval_hflx->ClearFluxRecv();
 }
 
 //----------------------------------------------------------------------------------------

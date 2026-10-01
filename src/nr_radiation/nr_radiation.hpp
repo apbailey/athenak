@@ -240,6 +240,12 @@ class SC {
   // boundary communication: separate MeshBoundaryValuesCC for ir and srad
   MeshBoundaryValuesCC *pbval_ir = nullptr;
   MeshBoundaryValuesCC *pbval_srad = nullptr;
+  // coarse-fine flux correction of hflx. Its own object rather than a borrowed one: the
+  // flux buffers, comm_flux and flux_req are per-object, so sharing pbval_srad (also
+  // nvar = 1) would work today and break silently the day srad wants a correction of its
+  // own. nullptr -- and so a no-op everywhere -- unless a differential form is in use on
+  // a multilevel mesh, so the integral form and every uniform grid pay nothing.
+  MeshBoundaryValuesCC *pbval_hflx = nullptr;
 
   Real dtnew;
 
@@ -290,6 +296,7 @@ class SC {
   void ComputeQrad();            // dispatch on qrad_form
   void ComputeQradIntegral();    // Eq. 27, local
   void BuildHFlux();             // H.n on cell faces, into hflx
+  void CorrectHFluxCoarseFine(); // one agreed face value across a coarse-fine face
   void ComputeQradDivH();        // Eq. 28 (and the hybrid blend), from hflx
 
   // formal solution (sc/formal_solution.cpp): dispatch on sweep_kernel. Public because

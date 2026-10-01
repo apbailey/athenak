@@ -31,6 +31,7 @@
 //! the two sums, the face-flux agreement, and the sweep count. Thresholds live in the
 //! pytest wrapper; the crash-guard here is loose and catches only NaN or blow-up.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -158,6 +159,23 @@ void SCQradConserveErrors(ParameterInput *pin, Mesh *pm) {
             << "; " << psc->niter_last << " sweeps)"
             << std::endl;
 
+  // Mesh census, so a refined-mesh test can assert that a level jump actually SURVIVED
+  // to the end of the run. Without it the AMR case passes vacuously: the adaptive deck
+  // refines every block at every level, leaving a uniform single-level mesh with no
+  // coarse-fine face in it by the time this runs -- which is exactly how the
+  // "no flux correction needed" conclusion of 2026-09-29 was reached.
+  // pm->max_level is useless here: it is hard-set to 31 under static refinement
+  // (build_tree.cpp), so the levels actually present must be reduced over lloc_eachmb.
+  // Host arrays, identical on every rank, so no MPI reduction.
+  int minlev = pm->lloc_eachmb[0].level;
+  int maxlev = minlev;
+  for (int j=1; j<pm->nmb_total; ++j) {
+    minlev = std::min(minlev, pm->lloc_eachmb[j].level);
+    maxlev = std::max(maxlev, pm->lloc_eachmb[j].level);
+  }
+  minlev -= pm->root_level;
+  maxlev -= pm->root_level;
+
   if (global_variable::my_rank == 0) {
     std::string fname = "sc_qrad_conserve-errs.dat";
     FILE *pf = std::fopen(fname.c_str(), "r");
@@ -166,11 +184,13 @@ void SCQradConserveErrors(ParameterInput *pin, Mesh *pm) {
     } else {                                   // new -> write header
       pf = std::fopen(fname.c_str(), "w");
       std::fprintf(pf, "# Nx1  Nx2  Nx3   Ncycle   residual     SumQdV       "
-                       "Sum|Q|dV     face-vs-mom  face-vs-mean niter\n");
+                       "Sum|Q|dV     face-vs-mom  face-vs-mean niter  nmb   "
+                       "minlev maxlev\n");
     }
-    std::fprintf(pf, "%04d  %04d  %04d  %05d  %e %e %e %e %e %d\n",
+    std::fprintf(pf, "%04d  %04d  %04d  %05d  %e %e %e %e %e %d %d %d %d\n",
                  pm->mesh_indcs.nx1, pm->mesh_indcs.nx2, pm->mesh_indcs.nx3, pm->ncycle,
-                 resid, sum_q, sum_abs, face_rel, mean_rel, psc->niter_last);
+                 resid, sum_q, sum_abs, face_rel, mean_rel, psc->niter_last,
+                 pm->nmb_total, minlev, maxlev);
     std::fclose(pf);
   }
 

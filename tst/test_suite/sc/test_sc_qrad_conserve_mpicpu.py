@@ -55,3 +55,41 @@ def test_sc_qrad_conserve_mpi(kernel, tile):
                 f"{val:.12g}, 1 rank gives {ref:.12g}"
     finally:
         testutils.cleanup()
+
+
+@pytest.mark.parametrize("kernel,tile", _KERNELS)
+def test_sc_qrad_conserve_smr_mpi(kernel, tile):
+    """Coarse-fine flux correction across a RANK boundary.
+
+    The correction is the one piece of this scheme whose data genuinely has to travel:
+    the coarse block cannot reconstruct the fine side's face flux from its own ghosts,
+    because RestrictCC already averaged away the layer that touches the face. On one rank
+    PackAndSendFluxCC copies straight into the receive buffer and the MPI path is never
+    taken at all, so this is the only case that exercises InitFluxRecv, the MPI_Isend and
+    the MPI_Test loop. It is also where a wrong nvar would surface -- as a truncation
+    error or as silent corruption.
+    """
+    input_file = "inputs/sc_qrad_conserve_smr.athinput"
+    base = [f"nr_radiation/sweep_kernel={kernel}", f"nr_radiation/tile_size={tile}"]
+    testutils.cleanup()
+    try:
+        heat = {}
+        for nranks in _RANKS:
+            testutils.cleanup()
+            assert testutils.mpi_run(input_file, base, threads=nranks), \
+                f"run failed: {kernel} SMR on {nranks} ranks"
+            row = _cols()
+            assert row[12] > row[11], \
+                f"{kernel} on {nranks} ranks: no level jump survived (levels " \
+                f"{int(row[11])}..{int(row[12])}) -- the test is measuring nothing"
+            assert row[4] < _RESID_TOL, \
+                f"{kernel} SMR on {nranks} ranks: heating does not integrate to zero " \
+                f"across the coarse-fine face, residual {row[4]:g} >= {_RESID_TOL:g}"
+            heat[nranks] = row[6]
+        ref = heat[1]
+        for n, val in heat.items():
+            assert abs(val - ref) <= 1.0e-12*ref, \
+                f"{kernel} SMR: total heating depends on the rank count: {n} ranks " \
+                f"give {val:.12g}, 1 rank gives {ref:.12g}"
+    finally:
+        testutils.cleanup()

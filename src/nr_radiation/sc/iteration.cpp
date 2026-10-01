@@ -535,6 +535,25 @@ TaskStatus SC::SolveTransfer(Driver *pdrive, int stage) {
   UpdateEmission();
   UpdateSource();
 
+  // Post the coarse-fine flux-correction receives HERE, before the iteration, not at the
+  // point of use: the matching sends are iter_max sweeps away, so this keeps the posting
+  // latency off the critical path. It is the same split hydro uses -- InitFluxRecv in
+  // "before_stagen", SendFlux in "stagen" (hydro_tasks.cpp) -- expressed without a second
+  // task list, since the chain is linear and there is nothing in
+  // "before_timeintegrator" to overlap it with anyway. The argument MUST be 1: it sets
+  // only the MPI_Irecv count, and a value disagreeing with hflx's second extent either
+  // overruns the buffer or trips MPI_ERR_TRUNCATE. Matched by ClearFluxRecv() in
+  // CorrectHFluxCoarseFine(), which runs on every path out of this function.
+  //
+  // Posting here is also what makes the correction deadlock-free, not merely prompt:
+  // CorrectHFluxCoarseFine ends in ClearFluxSend(), which is an MPI_Wait on its own
+  // sends (bvals_tasks.cpp). Every rank reaches THIS line before any rank sends, so
+  // every send has a matching receive already posted and the Wait always clears.
+  // nullptr unless a differential form is in use on a multilevel mesh.
+  if (pbval_hflx != nullptr) {
+    (void)pbval_hflx->InitFluxRecv(1);
+  }
+
   niter_last = 0;
   resid_last = 0.0;
   converged = false;

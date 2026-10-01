@@ -323,6 +323,30 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
   pbval_ir->InitializeBuffers(nang_tot);
   pbval_srad = new MeshBoundaryValuesCC(ppack, pin, false);
   pbval_srad->InitializeBuffers(1);
+  // Coarse-fine flux correction of hflx (nvar = 1, matching hflx's second extent --
+  // PackAndSendFluxCC and RecvAndUnpackFluxCC both derive nvar from flx.x1f.extent(1),
+  // and InitFluxRecv's argument sets only the MPI count, so the two MUST agree).
+  // Constructed only where it can act, so the integral form and uniform meshes allocate
+  // nothing: multilevel is set in the Mesh constructor, well before MeshBlockPack.
+  //
+  // Unconditional for the differential forms, because they exist BECAUSE they telescope
+  // and without this they stop doing so the moment the mesh is refined: measured
+  // residual 5.4e-04 (2D) and 4.7e-05 (3D) against 1.6e-16 with refinement off, i.e.
+  // only ~3x better than the integral form instead of thirteen orders. There is no knob
+  // because there is no regime in which the uncorrected answer is the one you want; the
+  // with/without comparison that established this is recorded in
+  // logs/validation/qrad_cf_conservation_2026-10-01/REPORT.md Sec. 7. Cost is within
+  // run-to-run noise (4.57 s vs 4.54 s on the 3D deck).
+  //
+  // NOTE this is NOT a DSJ12/JSD12 algorithm -- the papers say nothing about refinement,
+  // and Athena-C's rad_to_hydro has no coarse-fine awareness. It is AthenaK's own
+  // existing mechanism (Berger & Colella 1989), already driven by hydro, MHD and the GR
+  // radiation module, applied to hflx unchanged. Flagged as a deliberate deviation in
+  // logs/impl-athenak.md, as the half-range boundary rule was.
+  if (qrad_form != QradForm::integral && ppack->pmesh->multilevel) {
+    pbval_hflx = new MeshBoundaryValuesCC(ppack, pin, false);
+    pbval_hflx->InitializeBuffers(1);
+  }
 
   // hyperplane orderings for the sweep kernels (static in the meshblock/tile dims)
   BuildIndices();
@@ -334,6 +358,7 @@ SC::SC(MeshBlockPack *ppack, ParameterInput *pin) :
 // destructor
 
 SC::~SC() {
+  delete pbval_hflx;   // nullptr unless a differential form on a multilevel mesh
   delete pbval_srad;
   delete pbval_ir;
   delete pang;

@@ -5,8 +5,9 @@ A periodic, fluid-coupled box with a smooth density and pressure perturbation, s
 opacity and the emission both vary and the radiation field carries a real flux. With no
 boundary, the face-flux divergence telescopes to nothing and the heating must integrate
 to zero over the domain. Columns of sc_qrad_conserve-errs.dat:
-Nx1 Nx2 Nx3 Ncycle residual SumQdV Sum|Q|dV face-vs-mom face-vs-mean niter, where
-residual is |Sum Q dV| / Sum |Q| dV.
+Nx1 Nx2 Nx3 Ncycle residual SumQdV Sum|Q|dV face-vs-mom face-vs-mean niter nmb minlev
+maxlev, where residual is |Sum Q dV| / Sum |Q| dV and minlev/maxlev are the refinement
+levels actually present at the end of the run.
 
 What makes this a unit test rather than a convergence study is that the identity is
 algebraic: the cancellation is between face values shared by neighbouring cells, so it
@@ -87,30 +88,46 @@ def test_sc_qrad_conserve(kernel, tile):
 @pytest.mark.parametrize("levels", [2, 3])
 @pytest.mark.parametrize("kernel,tile", _KERNELS)
 def test_sc_qrad_conserve_amr(kernel, tile, levels):
-    """Conservation across coarse-fine interfaces, with no flux correction.
+    """Conservation on an ADAPTIVE mesh that really does keep a coarse-fine face.
 
-    It holds, and for a reason worth recording. Telescoping across a coarse-fine face
-    needs the coarse face flux to equal the area-weighted mean of the fine face fluxes
-    over it. The coarse block's ghost there is RestrictCC of the fine data, a plain volume
-    average; the fine blocks' ghosts are ProlongateCC of the coarse data, whose min-mod
-    increments cancel pairwise so the children average back to the parent. The face flux
-    is linear in the intensity, so those two properties are exactly the condition, and it
-    is met without a flux correction. The existing PackAndSendFluxCC machinery is
-    therefore not needed for this; if the reconstruction or the transfer operators ever
-    change, this test is what will notice.
+    This test used to run with the deck's own 16x16 meshblocks, which gives two root
+    blocks and a full-wavelength density perturbation -- so every block exceeded
+    value_max and refined, at every level (num_levels=2 -> 8 blocks = 2x4,
+    num_levels=3 -> 32 = 2x4x4). The mesh was uniform and single-level by the time the
+    residual was written, with no coarse-fine face anywhere in it, and the test was
+    reporting a uniform-grid number as proof about refined grids. That is how
+    "coarse-fine conservation needs no flux correction" came to be believed.
+
+    With 8x8 blocks and value_max = 1.29 only the crest refines and the jump survives:
+    20 blocks over levels 0-1, or 80 over levels 1-2. Before the coarse-fine flux
+    correction existed this configuration did not conserve -- measured at 4x4 blocks,
+    where the same criterion gives 3.5e-03 and 2.2e-03, worse than the static case
+    because there is more coarse-fine face. So this exercises the correction together
+    with remesh and load balance, and the maxlev > minlev assertion is what stops it
+    quietly reverting to a uniform-mesh measurement.
     """
     input_file = "inputs/sc_qrad_conserve.athinput"
+    # 8x8 meshblocks and a criterion that only the crest trips: with the deck's own 16x16
+    # blocks every block refines at every level and the mesh ends up uniform. 8 and not
+    # smaller because tile_size must divide the meshblock (nr_radiation.cpp), and the
+    # tiled kernel is parametrized here at tile_size = 8.
+    base = ["mesh_refinement/refinement=adaptive",
+            f"mesh_refinement/num_levels={levels}", "amr_criterion1/value_max=1.29",
+            "meshblock/nx1=8", "meshblock/nx2=8", "time/nlim=12",
+            f"nr_radiation/sweep_kernel={kernel}", f"nr_radiation/tile_size={tile}"]
     testutils.cleanup()
     try:
-        assert testutils.run(input_file, [
-            "mesh_refinement/refinement=adaptive", f"mesh_refinement/num_levels={levels}",
-            "time/nlim=12", f"nr_radiation/sweep_kernel={kernel}",
-            f"nr_radiation/tile_size={tile}",
-        ]), f"run failed: {kernel} AMR {levels} levels"
+        assert testutils.run(input_file, base), \
+            f"run failed: {kernel} AMR {levels} levels"
         row = _cols()
+        assert row[12] > row[11], \
+            f"{kernel} AMR {levels} levels: the mesh ended up uniform (levels " \
+            f"{int(row[11])}..{int(row[12])}, {int(row[10])} blocks), so this case is " \
+            f"measuring nothing -- fix the refinement criterion, not the tolerance"
         assert row[4] < _RESID_TOL, \
-            f"{kernel} AMR {levels} levels: heating does not integrate to zero across " \
-            f"coarse-fine faces, residual {row[4]:g} >= {_RESID_TOL:g}"
+            f"{kernel} AMR {levels} levels: heating does not integrate to zero, " \
+            f"residual {row[4]:g} >= {_RESID_TOL:g} (levels {int(row[11])}.." \
+            f"{int(row[12])}, {int(row[10])} blocks)"
     finally:
         testutils.cleanup()
 
